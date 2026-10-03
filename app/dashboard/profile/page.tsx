@@ -4,7 +4,8 @@ import { useState, useEffect, useMemo } from 'react';
 import { Header } from '@/components/header';
 import { Footer } from '@/components/footer';
 import { Button } from '@/components/ui/button';
-import { createClient } from '@/lib/supabase/client';
+import { getSessionProfile } from '@/lib/auth';
+import { updateProfile, recordsForPatient, createRecord, updateRecord, deleteRecord, type MedicalRecord } from '@/lib/db';
 import { User, FileText, Download, ArrowLeft, Save, Activity, Droplet, Upload, Plus, X, Stethoscope, Scale, Ruler, Trash2, Edit, CalendarIcon, ChevronLeft, ChevronRight } from 'lucide-react';
 import Link from 'next/link';
 
@@ -23,7 +24,7 @@ for (let f = 4; f <= 7; f++) {
 const YEAR_OPTIONS = Array.from({ length: 100 }, (_, i) => new Date().getFullYear() - i);
 
 export default function PatientProfile() {
-  const supabase = createClient();
+  const [profileId, setProfileId] = useState<string | null>(null);
   
   // Real State for Profile
   const [profile, setProfile] = useState({
@@ -42,8 +43,7 @@ export default function PatientProfile() {
     current_symptoms: ''
   });
   
-  const [records, setRecords] = useState<any[]>([]); 
-  const [isSaving, setIsSaving] = useState(false);
+  const [records, setRecords] = useState<MedicalRecord[]>([]);   const [isSaving, setIsSaving] = useState(false);
   const [isLoadingDB, setIsLoadingDB] = useState(true);
 
   // Modals & Popovers State
@@ -83,30 +83,27 @@ export default function PatientProfile() {
   useEffect(() => {
     const loadData = async () => {
       setIsLoadingDB(true);
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      const prof = await getSessionProfile();
+      if (!prof) return;
+      setProfileId(prof.id);
       
-      const { data: prof } = await supabase.from('profiles').select('*').eq('id', user.id).single();
-      if (prof) {
-        setProfile(prev => ({ ...prev, ...prof }));
-        if (prof.dob) setCalendarDate(new Date(prof.dob));
-      }
+      setProfile(prev => ({ ...prev, ...prof }));
+      if (prof.dob) setCalendarDate(new Date(prof.dob));
 
-      const { data: recs } = await supabase.from('medical_records').select('*').eq('patient_id', user.id).order('created_at', { ascending: false });
-      if (recs) setRecords(recs);
+      const recs = await recordsForPatient(prof.id);
+      setRecords(recs);
       
       setIsLoadingDB(false);
     };
     loadData();
-  }, [supabase]);
+  }, []);
 
   // --- SAVE PROFILE TO DB ---
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSaving(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) {
-      await supabase.from('profiles').upsert({ id: user.id, ...profile });
+    if (profileId) {
+      await updateProfile(profileId, { ...profile });
       alert("Profile updated successfully!");
     }
     setIsSaving(false);
@@ -126,68 +123,59 @@ export default function PatientProfile() {
     setShowDobCalendar(false);
   };
 
-  // --- LIVE RECORD MANAGEMENT WITH STORAGE ---
+  // --- LIVE RECORD MANAGEMENT (local) ---
   const handleDeleteRecord = async (id: string) => {
     if(!confirm("Are you sure you want to permanently delete this report?")) return;
-    await supabase.from('medical_records').delete().eq('id', id);
+    await deleteRecord(id);
     setRecords(records.filter(r => r.id !== id));
   };
 
-  const openEditModal = (record: any) => {
-    setUploadData({ id: record.id, doctor: record.doctor_name, type: record.report_type, file: record.file_url });
+  const openEditModal = (record: MedicalRecord) => {
+    setUploadData({ id: record.id, doctor: record.doctor_name || '', type: record.report_type || 'Blood Test Report', file: record.file_url || null });
     setShowEditModal(true);
   };
+
+  // Read a File object as a data URL so it can be stored & viewed offline
+  const fileToDataUrl = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
 
   const confirmUploadOrEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!uploadData.doctor) return;
     
     setIsUploading(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    const prof = await getSessionProfile();
+    if (!prof) { setIsUploading(false); return; }
     
     if (showEditModal) {
-      // 1. UPDATE EXISTING RECORD IN DB (Text only, not replacing file here for simplicity)
-      const { error } = await supabase
-        .from('medical_records')
-        .update({ doctor_name: uploadData.doctor, report_type: uploadData.type, title: uploadData.type })
-        .eq('id', uploadData.id);
+      // 1. UPDATE EXISTING RECORD (text fields)
+      const updated = await updateRecord(uploadData.id, { doctor_name: uploadData.doctor, report_type: uploadData.type, title: uploadData.type });
 
-      if (!error) {
+      if (updated) {
         setRecords(records.map(r => r.id === uploadData.id ? { ...r, doctor_name: uploadData.doctor, report_type: uploadData.type } : r));
       }
     } else {
-      // 2. REAL CLOUD STORAGE UPLOAD
-      let finalFileUrl = 'Unknown_File.pdf';
+      // 2. LOCAL FILE STORAGE — store the file as a data URL in the browser
+      let finalFileUrl = 'data:text/plain;charset=utf-8,' + encodeURIComponent(`${uploadData.type}\nUploaded by patient (no file attached).`);
 
       if (uploadData.file && typeof uploadData.file !== 'string') {
-        // Sanitize file name and create a unique path
-        const fileExt = uploadData.file.name.split('.').pop();
-        const safeFileName = uploadData.file.name.replace(/[^a-zA-Z0-9]/g, '_');
-        const filePath = `${user.id}_${Date.now()}_${safeFileName}.${fileExt}`;
-
-        // Upload physical file to Supabase Storage bucket
-        const { error: uploadError } = await supabase.storage
-          .from('medical_records')
-          .upload(filePath, uploadData.file);
-
-        if (uploadError) {
-          alert("Error uploading file: " + uploadError.message);
+        try {
+          finalFileUrl = await fileToDataUrl(uploadData.file);
+        } catch {
+          alert("Could not read the selected file.");
           setIsUploading(false);
           return;
         }
-
-        // Get the public URL for the file we just uploaded
-        const { data: publicUrlData } = supabase.storage
-          .from('medical_records')
-          .getPublicUrl(filePath);
-
-        finalFileUrl = publicUrlData.publicUrl;
       }
 
-      // 3. INSERT DATABASE RECORD WITH CLOUD URL
+      // 3. INSERT DATABASE RECORD WITH LOCAL URL
       const newRecord = {
-        patient_id: user.id,
+        patient_id: prof.id,
         doctor_name: uploadData.doctor,
         report_type: uploadData.type,
         title: uploadData.file && typeof uploadData.file !== 'string' ? uploadData.file.name : uploadData.type,
@@ -195,10 +183,8 @@ export default function PatientProfile() {
         uploaded_by: 'Patient'
       };
 
-      const { data, error } = await supabase.from('medical_records').insert([newRecord]).select().single();
-      if (data) {
-        setRecords([data, ...records]);
-      }
+      const data = await createRecord(newRecord);
+      setRecords([data, ...records]);
     }
 
     setIsUploading(false); 
@@ -471,7 +457,7 @@ export default function PatientProfile() {
                               {record.report_type}
                             </span>
                             <h4 className="font-bold text-foreground text-sm mt-2">{record.doctor_name}</h4>
-                            <p className="text-xs text-foreground-muted font-medium">{new Date(record.created_at).toLocaleDateString()}</p>
+                            <p className="text-xs text-foreground-muted font-medium">{new Date(record.created_at || Date.now()).toLocaleDateString()}</p>
                           </div>
                           
                           <div className="flex items-center gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity">

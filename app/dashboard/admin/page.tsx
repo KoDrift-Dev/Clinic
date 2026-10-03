@@ -2,13 +2,13 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
+import { getSessionProfile } from '@/lib/auth';
+import { listDoctors, listPatients, listAppointments, updateProfile, deleteProfile, deleteAppointment, type Profile, type Appointment } from '@/lib/db';
 import { Header } from '@/components/header';
 import { ShieldAlert, Activity, Users, Stethoscope, Calendar, Trash2, Edit, X, Save, Clock, Server } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 export default function AdminDashboard() {
-  const supabase = createClient();
   const router = useRouter();
 
   const [activeTab, setActiveTab] = useState<'overview' | 'doctors' | 'patients' | 'timeline'>('overview');
@@ -20,77 +20,71 @@ export default function AdminDashboard() {
   const [storageStatus, setStorageStatus] = useState<'Checking...' | 'Operational' | 'Degraded'>('Checking...');
 
   // Master Data States
-  const [doctors, setDoctors] = useState<any[]>([]);
-  const [patients, setPatients] = useState<any[]>([]);
-  const [appointments, setAppointments] = useState<any[]>([]);
+  const [doctors, setDoctors] = useState<Profile[]>([]);
+  const [patients, setPatients] = useState<Profile[]>([]);
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
 
   // Editing State
-  const [editingUser, setEditingUser] = useState<any | null>(null);
-  const [editForm, setEditForm] = useState<any>({});
+  const [editingUser, setEditingUser] = useState<Profile | null>(null);
+  const [editForm, setEditForm] = useState<Partial<Profile>>({});
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     const fetchGodModeData = async () => {
-      // 1. PING AUTHENTICATION SERVICE
-      const { data: { user }, error: authError } = await supabase.auth.getUser();
-      if (authError || !user) {
+      // 1. CHECK LOCAL SESSION (local demo mode — no auth server)
+      const profile = await getSessionProfile();
+      if (!profile) {
         setAuthStatus('Degraded');
         return router.push('/login');
       }
       setAuthStatus('Operational');
 
       // Verify Admin Role
-      const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
       if (profile?.role !== 'admin') {
         window.location.href = '/';
         return;
       }
 
-      // 2. PING DATABASE & FETCH DATA
-      const [docsRes, patsRes, apptsRes] = await Promise.all([
-        supabase.from('profiles').select('*').eq('role', 'doctor').order('created_at', { ascending: false }),
-        supabase.from('profiles').select('*').eq('role', 'patient').order('created_at', { ascending: false }),
-        supabase.from('appointments').select(`*, doctor:profiles!doctor_id(full_name), patient:profiles!patient_id(full_name)`).order('appointment_date', { ascending: false })
+      // 2. LOAD DATA FROM LOCAL DATABASE
+      const [docs, pats, appts] = await Promise.all([
+        listDoctors(),
+        listPatients(),
+        listAppointments()
       ]);
 
-      if (docsRes.data) setDoctors(docsRes.data);
-      if (patsRes.data) setPatients(patsRes.data);
-      if (apptsRes.data) setAppointments(apptsRes.data);
+      setDoctors(docs);
+      setPatients(pats);
+      setAppointments(appts);
+      setDbStatus('Operational');
 
-      if (docsRes.error || patsRes.error || apptsRes.error) {
-        setDbStatus('Degraded');
-      } else {
-        setDbStatus('Operational');
-      }
-
-      // 3. PING STORAGE SERVICE
-      const { error: storageError } = await supabase.storage.listBuckets();
-      if (storageError) {
-        setStorageStatus('Degraded');
-      } else {
+      // 3. LOCAL STORAGE HEALTH (replaces cloud storage ping)
+      try {
+        window.localStorage.setItem('medibook_healthcheck', 'ok');
+        window.localStorage.removeItem('medibook_healthcheck');
         setStorageStatus('Operational');
+      } catch {
+        setStorageStatus('Degraded');
       }
 
       setIsLoading(false);
     };
 
     fetchGodModeData();
-  }, [router, supabase]);
+  }, [router]);
 
   // --- CRUD OPERATIONS ---
-  const handleEditClick = (user: any) => {
+  const handleEditClick = (user: Profile) => {
     setEditingUser(user);
     setEditForm(user); 
   };
 
   const handleSaveUser = async () => {
+    if (!editingUser) return;
     setIsSaving(true);
-    const { error } = await supabase
-      .from('profiles')
-      .update(editForm)
-      .eq('id', editingUser.id);
+    const { id, ...patch } = editForm;
+    const updated = await updateProfile(editingUser.id, patch);
 
-    if (!error) {
+    if (updated) {
       if (editingUser.role === 'doctor') {
         setDoctors(docs => docs.map(d => d.id === editingUser.id ? { ...d, ...editForm } : d));
       } else {
@@ -98,7 +92,7 @@ export default function AdminDashboard() {
       }
       setEditingUser(null);
     } else {
-      alert("Error saving updates: " + error.message);
+      alert("Error saving updates. Please try again.");
     }
     setIsSaving(false);
   };
@@ -106,19 +100,15 @@ export default function AdminDashboard() {
   const handleDeleteUser = async (id: string, role: string) => {
     if (!window.confirm(`Are you sure you want to permanently delete this ${role}? This action cannot be undone.`)) return;
     
-    const { error } = await supabase.from('profiles').delete().eq('id', id);
-    if (!error) {
-      if (role === 'doctor') setDoctors(docs => docs.filter(d => d.id !== id));
-      if (role === 'patient') setPatients(pats => pats.filter(p => p.id !== id));
-    } else {
-      alert("Delete failed: " + error.message);
-    }
+    await deleteProfile(id);
+    if (role === 'doctor') setDoctors(docs => docs.filter(d => d.id !== id));
+    if (role === 'patient') setPatients(pats => pats.filter(p => p.id !== id));
   };
 
   const handleDeleteAppointment = async (id: string) => {
     if (!window.confirm('Delete this appointment record forever?')) return;
-    const { error } = await supabase.from('appointments').delete().eq('id', id);
-    if (!error) setAppointments(appts => appts.filter(a => a.id !== id));
+    await deleteAppointment(id);
+    setAppointments(appts => appts.filter(a => a.id !== id));
   };
 
   // Metrics
