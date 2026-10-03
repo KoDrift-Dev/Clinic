@@ -131,7 +131,7 @@ const SEED_RECORDS: MedicalRecord[] = [
 ];
 
 // ---------- storage ----------
-const DB_KEY = 'medibook_db_v1';
+const DB_KEY = 'medibook_db_v2'; // bumped 2026-10-03: seed now includes doctor photos
 
 interface DBShape { profiles: Profile[]; appointments: Appointment[]; medical_records: MedicalRecord[]; }
 
