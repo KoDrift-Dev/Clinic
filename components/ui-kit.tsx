@@ -113,7 +113,7 @@ const avatarTones = [
   'bg-[#b0526b]',
 ];
 
-export function Avatar({ name, size = 'md', className }: { name: string; size?: 'sm' | 'md' | 'lg' | 'xl'; className?: string }) {
+export function Avatar({ name, size = 'md', className, photo }: { name: string; size?: 'sm' | 'md' | 'lg' | 'xl'; className?: string; photo?: string }) {
   const initials = name.replace(/^Dr\.\s*/i, '').split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() || '•';
   let hash = 0;
   for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
@@ -124,6 +124,21 @@ export function Avatar({ name, size = 'md', className }: { name: string; size?: 
     lg: 'size-20 text-2xl',
     xl: 'size-28 text-4xl',
   };
+  if (photo) {
+    return (
+      <img
+        src={photo}
+        alt={name}
+        loading="lazy"
+        className={cn(
+          'rounded-full object-cover object-top shrink-0',
+          'ring-4 ring-white shadow-soft bg-cream',
+          sizes[size].split(' ')[0],
+          className,
+        )}
+      />
+    );
+  }
   return (
     <div
       aria-hidden

@@ -15,7 +15,7 @@ export function DoctorCard({ doctor, className }: { doctor: Profile; className?:
       aria-label={`View profile of ${doctor.full_name}`}
     >
       <div className="flex items-start gap-4">
-        <Avatar name={doctor.full_name} size="lg" />
+        <Avatar name={doctor.full_name} size="lg" photo={doctor.photo} />
         <div className="min-w-0 flex-1">
           <h3 className="font-display text-lg font-semibold text-ink-900 leading-snug group-hover:text-brand-700 transition-colors">
             {doctor.full_name}

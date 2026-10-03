@@ -134,7 +134,7 @@ export default function DoctorDetailPage() {
             <ArrowLeft className="size-4" /> Back to doctors
           </button>
           <div className="flex flex-col sm:flex-row sm:items-center gap-6">
-            <Avatar name={doctor.full_name} size="xl" className="ring-white/20" />
+            <Avatar name={doctor.full_name} size="xl" photo={doctor.photo} className="ring-white/20" />
             <div className="flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge className="bg-white/10 text-white border-white/15"><BadgeCheck className="size-3.5" /> Verified doctor</Badge>

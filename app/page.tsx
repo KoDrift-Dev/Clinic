@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   Search, MapPin, CalendarCheck, UserCheck, Stethoscope, ArrowRight,
-  ShieldCheck, Clock, Star, Quote, Sparkles,
+  ShieldCheck, Clock, Star, Quote, Sparkles, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import { SiteHeader } from '@/components/site-header';
 import { SiteFooter } from '@/components/site-footer';
@@ -124,6 +124,15 @@ export default function HomePage() {
   const [specialties, setSpecialties] = useState<SpecialtyInfo[]>([]);
   const [stats, setStats] = useState({ doctors: 0, visits: 0, rating: '0', cities: 0 });
   const [openFaq, setOpenFaq] = useState(0);
+  const carouselRef = useRef<HTMLDivElement>(null);
+
+  const scrollDoctors = (dir: 1 | -1) => {
+    const el = carouselRef.current;
+    if (!el) return;
+    const card = el.querySelector<HTMLElement>('[data-doc-card]');
+    const step = card ? card.offsetWidth + 20 : 340;
+    el.scrollBy({ left: dir * step, behavior: 'smooth' });
+  };
 
   useEffect(() => {
     (async () => {
@@ -150,9 +159,14 @@ export default function HomePage() {
 
       {/* ------------------------------- HERO ------------------------------- */}
       <section className="relative overflow-hidden">
-        <div className="absolute inset-0 dot-grid" aria-hidden />
-        <div className="absolute top-10 right-[8%] size-72 rounded-full bg-brand-200/50 blur-3xl" aria-hidden />
-        <div className="absolute bottom-0 left-[4%] size-80 rounded-full bg-glow-100 blur-3xl" aria-hidden />
+        <img
+          src="https://images.pexels.com/photos/4173251/pexels-photo-4173251.jpeg?auto=compress&cs=tinysrgb&w=1600"
+          alt=""
+          aria-hidden
+          className="absolute inset-0 size-full object-cover object-[72%_center]"
+        />
+        <div className="absolute inset-0 bg-gradient-to-r from-cream-50 via-cream-50/95 to-cream-50/25" aria-hidden />
+        <div className="absolute inset-0 bg-gradient-to-t from-cream-50/80 via-transparent to-transparent lg:hidden" aria-hidden />
         <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-14 sm:pt-20 lg:pt-24 pb-12 sm:pb-16">
           <div className="grid lg:grid-cols-[1.15fr_0.85fr] gap-10 lg:gap-14 items-center">
             <div className="animate-fade-up">
@@ -180,7 +194,7 @@ export default function HomePage() {
             <div className="relative hidden lg:block animate-fade-up" style={{ animationDelay: '120ms' }}>
               <Card className="p-6 relative z-10 animate-float">
                 <div className="flex items-center gap-4">
-                  <Avatar name={doctors[0]?.full_name ?? 'Dr. Ayesha Khan'} size="lg" />
+                  <Avatar name={doctors[0]?.full_name ?? 'Dr. Ayesha Khan'} size="lg" photo={doctors[0]?.photo} />
                   <div>
                     <p className="text-xs font-extrabold uppercase tracking-widest text-brand-700">Next available</p>
                     <p className="font-display text-xl font-semibold text-ink-900 mt-0.5">{doctors[0]?.full_name ?? 'Dr. Ayesha Khan'}</p>
@@ -300,14 +314,30 @@ export default function HomePage() {
                 eyebrow="Top rated"
                 title={<>Doctors patients <span className="italic text-brand-700">love.</span></>}
               />
-              <Link href="/doctors"><Button variant="outline" size="sm">All doctors <ArrowRight className="size-4" /></Button></Link>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => scrollDoctors(-1)}
+                  aria-label="Previous doctors"
+                  className="size-10 rounded-full border border-ink-900/10 bg-white text-ink-700 flex items-center justify-center shadow-soft hover:bg-brand-600 hover:text-white hover:border-brand-600 transition-all"
+                >
+                  <ChevronLeft className="size-5" />
+                </button>
+                <button
+                  onClick={() => scrollDoctors(1)}
+                  aria-label="Next doctors"
+                  className="size-10 rounded-full border border-ink-900/10 bg-white text-ink-700 flex items-center justify-center shadow-soft hover:bg-brand-600 hover:text-white hover:border-brand-600 transition-all"
+                >
+                  <ChevronRight className="size-5" />
+                </button>
+                <Link href="/doctors"><Button variant="outline" size="sm">All doctors <ArrowRight className="size-4" /></Button></Link>
+              </div>
             </div>
           </Reveal>
-          <div className="mt-10 grid sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
-            {doctors.slice(0, 4).map((d, i) => (
-              <Reveal key={d.id} delay={i * 80}>
+          <div ref={carouselRef} className="mt-10 flex gap-4 sm:gap-5 overflow-x-auto no-scrollbar snap-x snap-mandatory pb-2 -mx-4 px-4 sm:mx-0 sm:px-1">
+            {doctors.map((d) => (
+              <div key={d.id} data-doc-card className="snap-start shrink-0 w-[80%] sm:w-[47%] lg:w-[31.8%]">
                 <DoctorCard doctor={d} className="h-full" />
-              </Reveal>
+              </div>
             ))}
           </div>
         </div>
@@ -338,7 +368,7 @@ export default function HomePage() {
                 <Badge tone="brand">Confirmed</Badge>
               </div>
               <div className="mt-4 flex items-center gap-4">
-                <Avatar name={doctors[1]?.full_name ?? 'Dr. Tariq Mahmood'} size="md" />
+                <Avatar name={doctors[1]?.full_name ?? 'Dr. Tariq Mahmood'} size="md" photo={doctors[1]?.photo} />
                 <div>
                   <p className="font-bold text-ink-900 text-[15px]">{doctors[1]?.full_name ?? 'Dr. Tariq Mahmood'}</p>
                   <p className="text-[13px] text-ink-500 font-medium">{doctors[1]?.specialty ?? 'Dermatologist'} · {doctors[1]?.hospital ?? ''}</p>

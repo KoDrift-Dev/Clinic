@@ -322,7 +322,7 @@ export default function DoctorDashboard() {
           <Reveal>
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5">
               <div className="flex items-center gap-4">
-                <Avatar name={doctor?.full_name || 'Doctor'} size="lg" />
+                <Avatar name={doctor?.full_name || 'Doctor'} size="lg" photo={doctor?.photo} />
                 <div>
                   <span className="eyebrow">Doctor dashboard</span>
                   <h1 className="font-display text-3xl sm:text-4xl font-semibold text-ink-900 tracking-tight mt-1">

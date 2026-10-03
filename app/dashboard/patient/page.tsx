@@ -212,7 +212,7 @@ export default function PatientDashboard() {
                   <Card key={appt.id} className="lift p-6">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex items-center gap-3">
-                        <Avatar name={appt.doctor?.full_name || 'Doctor'} size="md" />
+                        <Avatar name={appt.doctor?.full_name || 'Doctor'} size="md" photo={appt.doctor?.photo} />
                         <div>
                           <h3 className="font-bold text-ink-900">{appt.doctor?.full_name || 'Doctor'}</h3>
                           <p className="text-brand-700 font-bold text-xs">{appt.doctor?.specialty || 'Consultation'}</p>
