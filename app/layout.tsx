@@ -19,6 +19,7 @@ const sans = Plus_Jakarta_Sans({
 })
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://clinic-medibook.vercel.app'),
   title: 'Crescent Care — Book Trusted Doctors Online in Pakistan',
   description:
     'Find verified doctors across Lahore, Karachi and Islamabad. Book appointments in seconds, manage your visits and prescriptions — all in one place.',
