@@ -1,495 +1,307 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
-import { Header } from '@/components/header';
-import { Footer } from '@/components/footer';
-import { Button } from '@/components/ui/button';
-import { getSessionProfile } from '@/lib/auth';
-import { updateProfile, recordsForPatient, createRecord, updateRecord, deleteRecord, type MedicalRecord } from '@/lib/db';
-import { User, FileText, Download, ArrowLeft, Save, Activity, Droplet, Upload, Plus, X, Stethoscope, Scale, Ruler, Trash2, Edit, CalendarIcon, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { SiteHeader } from '@/components/site-header';
+import { SiteFooter } from '@/components/site-footer';
+import { getSessionProfile } from '@/lib/auth';
+import { updateProfile, recordsForPatient, createRecord, deleteRecord, type Profile, type MedicalRecord } from '@/lib/db';
+import { Button, Card, Avatar, Input, Label, Textarea, Modal, EmptyState, Reveal } from '@/components/ui-kit';
+import { ArrowLeft, Save, FileText, Download, Trash2, Plus, UserRound, Activity, Droplets, UploadCloud } from 'lucide-react';
 
-const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const DAYS_OF_WEEK = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
+const REPORT_TYPES = ['Blood Test Report', 'Prescription', 'X-Ray / MRI Scan', 'Urine Test Report', 'Discharge Summary', 'Other'];
 
-// Generate Dropdown Options
-const WEIGHT_OPTIONS = Array.from({ length: 111 }, (_, i) => `${i + 40} kg`);
-const HEIGHT_OPTIONS: string[] = [];
-for (let f = 4; f <= 7; f++) {
-  for (let i = 0; i < 12; i++) {
-    if (f === 7 && i > 0) break;
-    HEIGHT_OPTIONS.push(`${f} ft ${i} in`);
-  }
-}
-const YEAR_OPTIONS = Array.from({ length: 100 }, (_, i) => new Date().getFullYear() - i);
-
-export default function PatientProfile() {
-  const [profileId, setProfileId] = useState<string | null>(null);
-  
-  // Real State for Profile
-  const [profile, setProfile] = useState({
-    full_name: '',
-    email: '',
-    phone: '',
-    dob: '2003-08-15', 
-    gender: 'Male',
-    emergency_contact: '',
-    blood_group: 'O+',
-    weight: '75 kg',
-    height: '5 ft 10 in',
-    disability: 'None',
-    allergies: 'None',
-    chronic_diseases: 'None',
-    current_symptoms: ''
+const fileToDataUrl = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
   });
-  
-  const [records, setRecords] = useState<MedicalRecord[]>([]);   const [isSaving, setIsSaving] = useState(false);
-  const [isLoadingDB, setIsLoadingDB] = useState(true);
 
-  // Modals & Popovers State
-  const [showUploadModal, setShowUploadModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadData, setUploadData] = useState({ id: '', doctor: '', type: 'Blood Test Report', file: null as File | null | string });
+export default function ProfilePage() {
+  const router = useRouter();
+  const [isLoading, setIsLoading] = useState(true);
+  const [profile, setProfile] = useState<Profile | null>(null);
 
-  // Custom DOB Calendar State
-  const [showDobCalendar, setShowDobCalendar] = useState(false);
-  const [calendarDate, setCalendarDate] = useState(new Date(profile.dob || '2003-08-15'));
+  const [form, setForm] = useState({
+    full_name: '', phone: '', city: '', dob: '', gender: '',
+    blood_group: '', weight: '', height: '', allergies: '',
+    chronic_diseases: '', emergency_contact: '', current_symptoms: '',
+  });
+  const [isSaving, setIsSaving] = useState(false);
+  const [savedMsg, setSavedMsg] = useState('');
 
-  // --- STYLING ---
-  const neonInputClass = "w-full px-5 py-3.5 bg-[#111113] border-2 border-zinc-800 rounded-full focus:outline-none focus:border-blue-500 focus:shadow-[0_0_20px_rgba(59,130,246,0.6)] focus:ring-4 focus:ring-blue-500/20 hover:border-blue-500/50 hover:shadow-[0_0_15px_rgba(59,130,246,0.2)] transition-all duration-300 text-white font-bold text-sm relative z-10 appearance-none";
+  const [records, setRecords] = useState<MedicalRecord[]>([]);
+  const [showUpload, setShowUpload] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [upload, setUpload] = useState({ title: '', type: 'Blood Test Report', notes: '', file: null as File | null });
 
-  // --- AUTO AGE CALCULATOR ---
-  const calculatedAge = useMemo(() => {
-    if (!profile.dob) return 'Select DOB';
-    const dob = new Date(profile.dob);
-    const now = new Date(); 
-    let years = now.getFullYear() - dob.getFullYear();
-    let months = now.getMonth() - dob.getMonth();
-    let days = now.getDate() - dob.getDate();
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
+    setForm(f => ({ ...f, [k]: e.target.value }));
 
-    if (days < 0) {
-      months -= 1;
-      days += new Date(now.getFullYear(), now.getMonth(), 0).getDate();
-    }
-    if (months < 0) {
-      years -= 1;
-      months += 12;
-    }
-    return `${years} yrs, ${months} mos, ${days} days`;
-  }, [profile.dob]);
-
-  // --- LIVE DATA FETCHING ---
   useEffect(() => {
-    const loadData = async () => {
-      setIsLoadingDB(true);
-      const prof = await getSessionProfile();
-      if (!prof) return;
-      setProfileId(prof.id);
-      
-      setProfile(prev => ({ ...prev, ...prof }));
-      if (prof.dob) setCalendarDate(new Date(prof.dob));
-
-      const recs = await recordsForPatient(prof.id);
-      setRecords(recs);
-      
-      setIsLoadingDB(false);
+    const load = async () => {
+      const p = await getSessionProfile();
+      if (!p) {
+        router.replace('/login');
+        return;
+      }
+      setProfile(p);
+      setForm({
+        full_name: p.full_name || '', phone: p.phone || '', city: p.city || '',
+        dob: p.dob || '', gender: p.gender || '', blood_group: p.blood_group || '',
+        weight: p.weight || '', height: p.height || '', allergies: p.allergies || '',
+        chronic_diseases: p.chronic_diseases || '', emergency_contact: p.emergency_contact || '',
+        current_symptoms: p.current_symptoms || '',
+      });
+      if (p.role === 'patient') {
+        setRecords(await recordsForPatient(p.id));
+      }
+      setIsLoading(false);
     };
-    loadData();
-  }, []);
+    load();
+  }, [router]);
 
-  // --- SAVE PROFILE TO DB ---
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!profile) return;
     setIsSaving(true);
-    if (profileId) {
-      await updateProfile(profileId, { ...profile });
-      alert("Profile updated successfully!");
-    }
+    setSavedMsg('');
+    await updateProfile(profile.id, { ...form });
+    setProfile({ ...profile, ...form });
     setIsSaving(false);
+    setSavedMsg('Profile saved successfully.');
+    setTimeout(() => setSavedMsg(''), 4000);
   };
 
-  // --- CALENDAR LOGIC ---
-  const daysInMonth = new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 0).getDate();
-  const firstDayOfMonth = new Date(calendarDate.getFullYear(), calendarDate.getMonth(), 1).getDay();
-
-  const handleSelectDate = (day: number) => {
-    const newDate = new Date(calendarDate.getFullYear(), calendarDate.getMonth(), day);
-    const offset = newDate.getTimezoneOffset();
-    const localDate = new Date(newDate.getTime() - (offset * 60 * 1000));
-    const formatted = localDate.toISOString().split('T')[0];
-    
-    setProfile({ ...profile, dob: formatted });
-    setShowDobCalendar(false);
-  };
-
-  // --- LIVE RECORD MANAGEMENT (local) ---
-  const handleDeleteRecord = async (id: string) => {
-    if(!confirm("Are you sure you want to permanently delete this report?")) return;
-    await deleteRecord(id);
-    setRecords(records.filter(r => r.id !== id));
-  };
-
-  const openEditModal = (record: MedicalRecord) => {
-    setUploadData({ id: record.id, doctor: record.doctor_name || '', type: record.report_type || 'Blood Test Report', file: record.file_url || null });
-    setShowEditModal(true);
-  };
-
-  // Read a File object as a data URL so it can be stored & viewed offline
-  const fileToDataUrl = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-
-  const confirmUploadOrEdit = async (e: React.FormEvent) => {
+  const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!uploadData.doctor) return;
-    
-    setIsUploading(true);
-    const prof = await getSessionProfile();
-    if (!prof) { setIsUploading(false); return; }
-    
-    if (showEditModal) {
-      // 1. UPDATE EXISTING RECORD (text fields)
-      const updated = await updateRecord(uploadData.id, { doctor_name: uploadData.doctor, report_type: uploadData.type, title: uploadData.type });
-
-      if (updated) {
-        setRecords(records.map(r => r.id === uploadData.id ? { ...r, doctor_name: uploadData.doctor, report_type: uploadData.type } : r));
-      }
-    } else {
-      // 2. LOCAL FILE STORAGE — store the file as a data URL in the browser
-      let finalFileUrl = 'data:text/plain;charset=utf-8,' + encodeURIComponent(`${uploadData.type}\nUploaded by patient (no file attached).`);
-
-      if (uploadData.file && typeof uploadData.file !== 'string') {
+    if (!profile) return;
+    setUploading(true);
+    try {
+      let fileUrl = 'data:text/plain;charset=utf-8,' + encodeURIComponent(`${upload.type}\n${upload.notes || 'Uploaded by patient (no file attached).'}`);
+      if (upload.file) {
         try {
-          finalFileUrl = await fileToDataUrl(uploadData.file);
+          fileUrl = await fileToDataUrl(upload.file);
         } catch {
-          alert("Could not read the selected file.");
-          setIsUploading(false);
+          setUploading(false);
           return;
         }
       }
-
-      // 3. INSERT DATABASE RECORD WITH LOCAL URL
-      const newRecord = {
-        patient_id: prof.id,
-        doctor_name: uploadData.doctor,
-        report_type: uploadData.type,
-        title: uploadData.file && typeof uploadData.file !== 'string' ? uploadData.file.name : uploadData.type,
-        file_url: finalFileUrl,
-        uploaded_by: 'Patient'
-      };
-
-      const data = await createRecord(newRecord);
-      setRecords([data, ...records]);
+      const rec = await createRecord({
+        patient_id: profile.id,
+        doctor_name: upload.notes || undefined,
+        title: upload.title || upload.file?.name || upload.type,
+        report_type: upload.type,
+        file_url: fileUrl,
+        uploaded_by: 'Patient',
+        created_at: new Date().toISOString(),
+      });
+      setRecords(cur => [rec, ...cur]);
+      setShowUpload(false);
+      setUpload({ title: '', type: 'Blood Test Report', notes: '', file: null });
+    } finally {
+      setUploading(false);
     }
-
-    setIsUploading(false); 
-    setShowUploadModal(false); 
-    setShowEditModal(false);
-    setUploadData({ id: '', doctor: '', type: 'Blood Test Report', file: null });
   };
 
-  if (isLoadingDB) return <div className="min-h-screen flex items-center justify-center font-bold text-primary animate-pulse">Loading Profile...</div>;
+  const handleDeleteRecord = async (id: string) => {
+    if (!window.confirm('Permanently delete this report?')) return;
+    await deleteRecord(id);
+    setRecords(cur => cur.filter(r => r.id !== id));
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-cream-50">
+        <div className="text-center">
+          <div className="size-12 rounded-full border-4 border-brand-200 border-t-brand-600 animate-spin mx-auto mb-4" />
+          <p className="font-display text-xl text-ink-900">Loading your profile</p>
+        </div>
+      </div>
+    );
+  }
+
+  const isPatient = profile?.role === 'patient';
+  const backHref = profile ? `/dashboard/${profile.role}` : '/dashboard';
 
   return (
-    <div className="min-h-screen flex flex-col bg-background relative">
-      <Header />
+    <div className="min-h-screen flex flex-col bg-cream-50">
+      <SiteHeader />
 
-      {/* SHARED UPLOAD / EDIT MODAL */}
-      {(showUploadModal || showEditModal) && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => !isUploading && (setShowUploadModal(false), setShowEditModal(false))} />
-          <div className="glass-card bg-background/95 w-full max-w-md rounded-3xl z-10 p-8 border border-blue-500/50 shadow-[0_0_40px_rgba(59,130,246,0.3)] animate-in zoom-in-95">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-black text-foreground flex items-center gap-2">
-                {showEditModal ? <Edit className="w-5 h-5 text-amber-500"/> : <Upload className="w-5 h-5 text-primary"/>} 
-                {showEditModal ? 'Edit Report Info' : 'Upload Report'}
-              </h2>
-              {!isUploading && <button onClick={() => (setShowUploadModal(false), setShowEditModal(false))} className="p-2 hover:bg-white/10 rounded-full"><X className="w-5 h-5 text-foreground"/></button>}
+      {/* Upload modal */}
+      <Modal open={showUpload} onClose={() => setShowUpload(false)}>
+        <form onSubmit={handleUpload} className="p-8">
+          <h3 className="font-display text-2xl font-semibold text-ink-900 flex items-center gap-2">
+            <UploadCloud className="size-6 text-brand-600" /> Upload medical report
+          </h3>
+          <p className="text-ink-500 text-sm mt-1">Attach a lab result or prescription for your doctor to review.</p>
+          <div className="mt-6 space-y-4">
+            <div>
+              <Label htmlFor="rec-title">Title</Label>
+              <Input id="rec-title" placeholder="e.g. CBC Report — Chughtai Lab" value={upload.title} onChange={e => setUpload({ ...upload, title: e.target.value })} required />
             </div>
-            
-            <form onSubmit={confirmUploadOrEdit} className="space-y-5 relative">
-              <div className="relative">
-                <label className="block text-sm font-bold text-foreground mb-2 ml-2">Select Doctor or Lab</label>
-                <div className="relative">
-                  <select required value={uploadData.doctor} onChange={e => setUploadData({...uploadData, doctor: e.target.value})} className={neonInputClass}>
-                    <option value="" disabled>Choose an option...</option>
-                    <option value="Dr. Tariq Mahmood">Dr. Tariq Mahmood</option>
-                    <option value="Dr. Ayesha Khan">Dr. Ayesha Khan</option>
-                    <option value="External Lab (Chughtai/Shaukat Khanum)">External Lab / Private</option>
-                  </select>
-                  <div className="absolute inset-y-0 right-5 flex items-center pointer-events-none z-20"><ArrowLeft className="w-4 h-4 -rotate-90 text-primary drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]" /></div>
-                </div>
-              </div>
+            <div>
+              <Label htmlFor="rec-type">Report type</Label>
+              <select id="rec-type" value={upload.type} onChange={e => setUpload({ ...upload, type: e.target.value })}
+                className="w-full rounded-2xl border border-ink-900/15 bg-white px-4 py-3 text-[15px] font-medium text-ink-900 appearance-none pr-10 cursor-pointer focus:border-brand-500 focus:ring-4 focus:ring-brand-500/15 focus:outline-none">
+                {REPORT_TYPES.map(t => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <Label htmlFor="rec-notes">Notes</Label>
+              <Textarea id="rec-notes" placeholder="Anything your doctor should know…" value={upload.notes} onChange={e => setUpload({ ...upload, notes: e.target.value })} />
+            </div>
+            <div>
+              <Label htmlFor="rec-file">Attach file (PDF or image)</Label>
+              <input id="rec-file" type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={e => setUpload({ ...upload, file: e.target.files?.[0] || null })}
+                className="w-full text-sm text-ink-500 file:mr-4 file:py-2.5 file:px-5 file:rounded-full file:border-0 file:text-sm file:font-bold file:bg-brand-50 file:text-brand-700 hover:file:bg-brand-100 transition-all cursor-pointer" />
+            </div>
+          </div>
+          <Button type="submit" loading={uploading} className="w-full mt-6" size="lg">
+            Save report
+          </Button>
+        </form>
+      </Modal>
 
-              <div className="relative">
-                <label className="block text-sm font-bold text-foreground mb-2 ml-2">Report Type</label>
-                <div className="relative">
-                  <select value={uploadData.type} onChange={e => setUploadData({...uploadData, type: e.target.value})} className={neonInputClass}>
-                    <option>Blood Test Report</option>
-                    <option>Prescription</option>
-                    <option>X-Ray / MRI Scan</option>
-                    <option>Urine Test Report</option>
-                  </select>
-                  <div className="absolute inset-y-0 right-5 flex items-center pointer-events-none z-20"><ArrowLeft className="w-4 h-4 -rotate-90 text-primary drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]" /></div>
-                </div>
+      <main className="flex-1">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-14 space-y-8">
+          <Reveal>
+            <Link href={backHref} className="inline-flex items-center gap-2 text-ink-500 hover:text-brand-700 font-bold text-sm mb-4">
+              <ArrowLeft className="size-4" /> Back to dashboard
+            </Link>
+            <div className="flex items-center gap-4">
+              <Avatar name={profile?.full_name || 'User'} size="lg" />
+              <div>
+                <span className="eyebrow">My profile</span>
+                <h1 className="font-display text-3xl sm:text-4xl font-semibold text-ink-900 tracking-tight mt-1">
+                  {profile?.full_name}
+                </h1>
+                <p className="text-ink-500 text-sm mt-1 capitalize">{profile?.role} · {profile?.email}</p>
               </div>
+            </div>
+          </Reveal>
 
-              {!showEditModal && (
+          <Reveal>
+            <Card className="p-6 sm:p-8">
+              <form onSubmit={handleSave} className="space-y-8">
                 <div>
-                  <label className="block text-sm font-bold text-foreground mb-2 ml-2">Attach PDF or Image</label>
-                  <input type="file" required accept=".pdf,.jpg,.png,.jpeg" onChange={e => setUploadData({...uploadData, file: e.target.files?.[0] || null})} className="w-full text-sm text-foreground-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-bold file:bg-primary file:text-white hover:file:bg-blue-600 transition-all cursor-pointer" />
+                  <h2 className="font-display text-xl font-semibold text-ink-900 flex items-center gap-2 pb-4 mb-6 border-b border-ink-900/[0.07]">
+                    <UserRound className="size-5 text-brand-600" /> Personal information
+                  </h2>
+                  <div className="grid sm:grid-cols-2 gap-5">
+                    <div><Label htmlFor="full_name">Full name</Label><Input id="full_name" value={form.full_name} onChange={set('full_name')} /></div>
+                    <div><Label htmlFor="phone">Phone</Label><Input id="phone" placeholder="03xx xxxxxxx" value={form.phone} onChange={set('phone')} /></div>
+                    <div><Label htmlFor="city">City</Label><Input id="city" placeholder="Karachi" value={form.city} onChange={set('city')} /></div>
+                    <div><Label htmlFor="dob">Date of birth</Label><Input id="dob" type="date" value={form.dob} onChange={set('dob')} /></div>
+                    <div>
+                      <Label htmlFor="gender">Gender</Label>
+                      <select id="gender" value={form.gender} onChange={set('gender')}
+                        className="w-full rounded-2xl border border-ink-900/15 bg-white px-4 py-3 text-[15px] font-medium text-ink-900 appearance-none pr-10 cursor-pointer focus:border-brand-500 focus:ring-4 focus:ring-brand-500/15 focus:outline-none">
+                        <option value="">Select…</option>
+                        <option>Male</option><option>Female</option><option>Other</option>
+                      </select>
+                    </div>
+                    <div><Label htmlFor="emergency">Emergency contact</Label><Input id="emergency" placeholder="Relative's phone number" value={form.emergency_contact} onChange={set('emergency_contact')} /></div>
+                  </div>
+                </div>
+
+                {isPatient && (
+                  <div>
+                    <h2 className="font-display text-xl font-semibold text-ink-900 flex items-center gap-2 pb-4 mb-6 border-b border-ink-900/[0.07]">
+                      <Activity className="size-5 text-red-600" /> Medical profile
+                    </h2>
+                    <div className="grid sm:grid-cols-3 gap-5 mb-5">
+                      <div>
+                        <Label htmlFor="blood">Blood group</Label>
+                        <select id="blood" value={form.blood_group} onChange={set('blood_group')}
+                          className="w-full rounded-2xl border border-ink-900/15 bg-white px-4 py-3 text-[15px] font-medium text-ink-900 appearance-none pr-10 cursor-pointer focus:border-brand-500 focus:ring-4 focus:ring-brand-500/15 focus:outline-none">
+                          <option value="">Select…</option>
+                          {BLOOD_GROUPS.map(b => <option key={b}>{b}</option>)}
+                        </select>
+                      </div>
+                      <div><Label htmlFor="weight">Weight</Label><Input id="weight" placeholder="e.g. 72 kg" value={form.weight} onChange={set('weight')} /></div>
+                      <div><Label htmlFor="height">Height</Label><Input id="height" placeholder="e.g. 5 ft 10 in" value={form.height} onChange={set('height')} /></div>
+                    </div>
+                    <div className="grid sm:grid-cols-2 gap-5">
+                      <div><Label htmlFor="allergies">Known allergies</Label><Input id="allergies" placeholder="e.g. Penicillin, dust" value={form.allergies} onChange={set('allergies')} /></div>
+                      <div><Label htmlFor="chronic">Chronic diseases</Label><Input id="chronic" placeholder="e.g. Diabetes, hypertension" value={form.chronic_diseases} onChange={set('chronic_diseases')} /></div>
+                    </div>
+                    <div className="mt-5">
+                      <Label htmlFor="symptoms">Current symptoms</Label>
+                      <Textarea id="symptoms" placeholder="Describe what you are feeling…" value={form.current_symptoms} onChange={set('current_symptoms')} />
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row items-center justify-end gap-4 pt-6 border-t border-ink-900/[0.07]">
+                  {savedMsg && <p className="text-sm font-bold text-brand-700">{savedMsg}</p>}
+                  <Button type="submit" loading={isSaving} size="lg">
+                    <Save className="size-4" /> {isSaving ? 'Saving…' : 'Save profile'}
+                  </Button>
+                </div>
+              </form>
+            </Card>
+          </Reveal>
+
+          {isPatient && (
+            <Reveal>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-display text-2xl font-semibold text-ink-900 flex items-center gap-2">
+                  <FileText className="size-6 text-brand-600" /> My medical records
+                </h2>
+                <Button onClick={() => setShowUpload(true)}>
+                  <Plus className="size-4" /> Upload report
+                </Button>
+              </div>
+              {records.length === 0 ? (
+                <Card>
+                  <EmptyState
+                    title="No records uploaded"
+                    copy="Keep your lab reports and prescriptions here so they are always at hand during a visit."
+                    action={<Button variant="secondary" onClick={() => setShowUpload(true)}>Upload your first report</Button>}
+                  />
+                </Card>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {records.map(rec => (
+                    <Card key={rec.id} className="lift p-5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <span className="inline-flex items-center rounded-full bg-brand-50 text-brand-800 border border-brand-200 px-2.5 py-1 text-[11px] font-extrabold uppercase tracking-wide">
+                            {rec.report_type || 'Report'}
+                          </span>
+                          <h3 className="font-bold text-ink-900 mt-2 truncate">{rec.title || 'Untitled report'}</h3>
+                          <p className="text-xs text-ink-500 mt-1">
+                            {rec.uploaded_by === 'Doctor' ? `Dr. ${rec.doctor_name || '—'}` : 'Uploaded by you'} · {rec.created_at ? new Date(rec.created_at).toLocaleDateString() : ''}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handleDeleteRecord(rec.id)}
+                          aria-label="Delete report"
+                          className="size-9 rounded-full text-ink-500 hover:text-red-700 hover:bg-red-50 inline-flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                        >
+                          <Trash2 className="size-4" />
+                        </button>
+                      </div>
+                      {rec.file_url && (
+                        <a href={rec.file_url} download={rec.title || 'report'} className="mt-4 inline-flex">
+                          <Button variant="outline" size="sm"><Download className="size-3.5" /> Download</Button>
+                        </a>
+                      )}
+                    </Card>
+                  ))}
                 </div>
               )}
-
-              <Button type="submit" disabled={isUploading || (!showEditModal && !uploadData.file)} className={`w-full text-white rounded-full font-bold py-6 mt-4 hover-wave btn-glow border-0 ${showEditModal ? 'bg-amber-500 hover:bg-amber-600 shadow-[0_0_20px_rgba(245,158,11,0.4)]' : 'bg-gradient-to-r from-blue-500 to-blue-700 shadow-[0_0_20px_rgba(59,130,246,0.4)]'}`}>
-                {isUploading ? 'Uploading to Cloud...' : (showEditModal ? 'Save Changes' : 'Confirm Upload')}
-              </Button>
-            </form>
-          </div>
-        </div>
-      )}
-
-      <main className="flex-1 py-10 md:py-16 relative overflow-hidden">
-        <div className="absolute top-0 right-1/4 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl -z-10 float-slower" />
-        
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
-          
-          <div>
-            <Link href="/dashboard/patient" className="inline-flex items-center gap-2 text-foreground-muted hover:text-primary font-bold mb-4 transition-colors">
-              <ArrowLeft className="w-5 h-5" /> Back to Dashboard
-            </Link>
-            <h1 className="text-3xl md:text-4xl font-black text-foreground">
-              Profile & <span className="text-primary dark:text-blue-400 drop-shadow-[0_0_15px_rgba(59,130,246,0.5)]">Records</span>
-            </h1>
-          </div>
-
-          <div className="grid lg:grid-cols-3 gap-8 items-start">
-            
-            {/* LEFT COLUMN: Profile Form */}
-            <div className="lg:col-span-2 space-y-6">
-              <div className="glass-card p-6 md:p-8 rounded-3xl border border-blue-500/20 shadow-lg relative z-10">
-                <form onSubmit={handleSave} className="space-y-8">
-                  
-                  {/* Basic Info */}
-                  <div>
-                    <h2 className="text-xl font-black text-foreground flex items-center gap-2 mb-6 border-b border-border/50 pb-4">
-                      <User className="w-5 h-5 text-primary" /> Personal Information
-                    </h2>
-                    <div className="grid sm:grid-cols-2 gap-6">
-                      <div><label className="block text-sm font-bold text-foreground mb-2 ml-2">Full Name</label><input type="text" value={profile.full_name} onChange={e => setProfile({...profile, full_name: e.target.value})} className={neonInputClass}/></div>
-                      <div><label className="block text-sm font-bold text-foreground mb-2 ml-2">Email</label><input type="email" value={profile.email} onChange={e => setProfile({...profile, email: e.target.value})} className={neonInputClass}/></div>
-                      <div><label className="block text-sm font-bold text-foreground mb-2 ml-2">Phone</label><input type="text" value={profile.phone} onChange={e => setProfile({...profile, phone: e.target.value})} className={neonInputClass}/></div>
-                      
-                      <div className="relative">
-                        <label className="block text-sm font-bold text-foreground mb-2 ml-2">Gender</label>
-                        <div className="relative">
-                          <select value={profile.gender} onChange={e => setProfile({...profile, gender: e.target.value})} className={neonInputClass}>
-                            <option>Male</option><option>Female</option><option>Other</option><option>Prefer not to say</option>
-                          </select>
-                          <div className="absolute inset-y-0 right-5 flex items-center pointer-events-none z-20"><ArrowLeft className="w-4 h-4 -rotate-90 text-primary drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]" /></div>
-                        </div>
-                      </div>
-
-                      {/* DOB Field with Custom Neon Calendar */}
-                      <div className="relative">
-                        <label className="block text-sm font-bold text-foreground mb-2 ml-2">Date of Birth</label>
-                        <div 
-                          onClick={() => setShowDobCalendar(true)}
-                          className={`${neonInputClass} flex items-center justify-between cursor-pointer`}
-                        >
-                          <span>{new Date(profile.dob).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric'})}</span>
-                          <CalendarIcon className="w-4 h-4 text-primary drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]" />
-                        </div>
-                        
-                        {/* CUSTOM NEON CALENDAR POPOVER */}
-                        {showDobCalendar && (
-                          <>
-                            <div className="fixed inset-0 z-40" onClick={() => setShowDobCalendar(false)} />
-                            <div className="absolute top-full left-0 mt-2 w-full z-50 glass-card bg-[#0a0a0c]/95 backdrop-blur-xl border border-blue-500/50 shadow-[0_0_30px_rgba(59,130,246,0.3)] rounded-3xl p-5 animate-in zoom-in-95">
-                              <div className="flex items-center justify-between mb-4">
-                                <button type="button" onClick={() => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() - 1, 1))} className="p-2 hover:bg-blue-500/20 rounded-full transition-colors"><ChevronLeft className="w-5 h-5 text-primary" /></button>
-                                
-                                <div className="flex gap-2">
-                                  <select value={calendarDate.getMonth()} onChange={e => setCalendarDate(new Date(calendarDate.getFullYear(), parseInt(e.target.value), 1))} className="bg-transparent text-white font-bold outline-none cursor-pointer hover:text-primary">
-                                    {MONTH_NAMES.map((m, i) => <option key={m} value={i} className="text-black">{m}</option>)}
-                                  </select>
-                                  <select value={calendarDate.getFullYear()} onChange={e => setCalendarDate(new Date(parseInt(e.target.value), calendarDate.getMonth(), 1))} className="bg-transparent text-white font-bold outline-none cursor-pointer hover:text-primary">
-                                    {YEAR_OPTIONS.map(y => <option key={y} value={y} className="text-black">{y}</option>)}
-                                  </select>
-                                </div>
-
-                                <button type="button" onClick={() => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 1))} className="p-2 hover:bg-blue-500/20 rounded-full transition-colors"><ChevronRight className="w-5 h-5 text-primary" /></button>
-                              </div>
-                              
-                              <div className="grid grid-cols-7 mb-2">
-                                {DAYS_OF_WEEK.map(day => <div key={day} className="text-center text-xs font-bold text-primary/70 pb-2">{day}</div>)}
-                              </div>
-                              <div className="grid grid-cols-7 gap-1">
-                                {Array.from({ length: firstDayOfMonth }).map((_, i) => <div key={`empty-${i}`} className="p-2" />)}
-                                {Array.from({ length: daysInMonth }).map((_, i) => {
-                                  const dayNumber = i + 1;
-                                  const isSelected = new Date(profile.dob).getDate() === dayNumber && new Date(profile.dob).getMonth() === calendarDate.getMonth() && new Date(profile.dob).getFullYear() === calendarDate.getFullYear();
-                                  return (
-                                    <button
-                                      type="button"
-                                      key={dayNumber}
-                                      onClick={() => handleSelectDate(dayNumber)}
-                                      className={`h-10 w-full flex items-center justify-center rounded-xl text-sm font-bold transition-all hover-wave ${
-                                        isSelected ? 'bg-primary text-white shadow-[0_0_15px_rgba(59,130,246,0.8)]' : 'text-foreground hover:bg-blue-500/20 hover:text-blue-400'
-                                      }`}
-                                    >
-                                      {dayNumber}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          </>
-                        )}
-                      </div>
-
-                      {/* Read-Only Auto Age Box */}
-                      <div>
-                        <label className="block text-sm font-bold text-foreground mb-2 ml-2">Current Age</label>
-                        <input type="text" readOnly value={calculatedAge} className="w-full px-5 py-3.5 bg-primary/10 border-2 border-primary/30 rounded-full text-primary font-black text-sm outline-none shadow-[inset_0_0_10px_rgba(59,130,246,0.1)] cursor-default"/>
-                      </div>
-
-                      <div><label className="block text-sm font-bold text-foreground mb-2 ml-2">Emergency Contact</label><input type="text" placeholder="Relative's Phone No." value={profile.emergency_contact} onChange={e => setProfile({...profile, emergency_contact: e.target.value})} className={neonInputClass}/></div>
-                    </div>
-                  </div>
-
-                  {/* Medical Info */}
-                  <div>
-                    <h3 className="text-xl font-black text-foreground flex items-center gap-2 pt-4 border-t border-border/50 mb-6">
-                      <Activity className="w-5 h-5 text-red-400" /> Comprehensive Medical Profile
-                    </h3>
-                    <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
-                      
-                      <div className="relative">
-                        <label className="block text-sm font-bold text-foreground mb-2 ml-2 flex items-center gap-1"><Droplet className="w-4 h-4 text-red-500" /> Blood</label>
-                        <div className="relative">
-                          <select value={profile.blood_group} onChange={e => setProfile({...profile, blood_group: e.target.value})} className={neonInputClass}>
-                            <option>A+</option><option>B+</option><option>O+</option><option>AB+</option><option>A-</option><option>B-</option><option>O-</option><option>AB-</option>
-                          </select>
-                          <div className="absolute inset-y-0 right-5 flex items-center pointer-events-none z-20"><ArrowLeft className="w-4 h-4 -rotate-90 text-primary drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]" /></div>
-                        </div>
-                      </div>
-
-                      <div className="relative">
-                        <label className="block text-sm font-bold text-foreground mb-2 ml-2 flex items-center gap-1"><Scale className="w-4 h-4 text-emerald-500" /> Weight</label>
-                        <div className="relative">
-                          <select value={profile.weight} onChange={e => setProfile({...profile, weight: e.target.value})} className={neonInputClass}>
-                            {WEIGHT_OPTIONS.map(w => <option key={w} value={w}>{w}</option>)}
-                          </select>
-                          <div className="absolute inset-y-0 right-5 flex items-center pointer-events-none z-20"><ArrowLeft className="w-4 h-4 -rotate-90 text-primary drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]" /></div>
-                        </div>
-                      </div>
-
-                      <div className="relative">
-                        <label className="block text-sm font-bold text-foreground mb-2 ml-2 flex items-center gap-1"><Ruler className="w-4 h-4 text-emerald-500" /> Height</label>
-                        <div className="relative">
-                          <select value={profile.height} onChange={e => setProfile({...profile, height: e.target.value})} className={neonInputClass}>
-                            {HEIGHT_OPTIONS.map(h => <option key={h} value={h}>{h}</option>)}
-                          </select>
-                          <div className="absolute inset-y-0 right-5 flex items-center pointer-events-none z-20"><ArrowLeft className="w-4 h-4 -rotate-90 text-primary drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]" /></div>
-                        </div>
-                      </div>
-                      
-                      <div className="relative">
-                        <label className="block text-sm font-bold text-foreground mb-2 ml-2 flex items-center gap-1">Disability</label>
-                        <div className="relative">
-                          <select value={profile.disability} onChange={e => setProfile({...profile, disability: e.target.value})} className={neonInputClass}>
-                            <option>None</option><option>Physical</option><option>Visual</option><option>Hearing</option><option>Cognitive</option><option>Other</option>
-                          </select>
-                          <div className="absolute inset-y-0 right-5 flex items-center pointer-events-none z-20"><ArrowLeft className="w-4 h-4 -rotate-90 text-primary drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]" /></div>
-                        </div>
-                      </div>
-                    </div>
-                    
-                    <div className="space-y-6">
-                      <div><label className="block text-sm font-bold text-foreground mb-2 ml-2">Permanent / Chronic Diseases</label><input type="text" placeholder="e.g., Diabetes, BP, Cancer" value={profile.chronic_diseases} onChange={e => setProfile({...profile, chronic_diseases: e.target.value})} className={neonInputClass}/></div>
-                      <div><label className="block text-sm font-bold text-foreground mb-2 ml-2">Known Allergies</label><input type="text" placeholder="e.g., Peanuts, Penicillin, Dust" value={profile.allergies} onChange={e => setProfile({...profile, allergies: e.target.value})} className={neonInputClass}/></div>
-                      <div>
-                        <label className="block text-sm font-bold text-primary mb-2 ml-2 flex items-center gap-2"><Stethoscope className="w-4 h-4 drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]"/> Current Symptoms</label>
-                        <textarea rows={3} placeholder="Describe your current stomach pain, headaches, etc." value={profile.current_symptoms} onChange={e => setProfile({...profile, current_symptoms: e.target.value})} className={`${neonInputClass} rounded-2xl resize-none`}/>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex justify-end pt-6 border-t border-border/50">
-                    <Button type="submit" disabled={isSaving} className="bg-primary text-white font-bold rounded-full px-10 py-6 hover-wave btn-glow border-0 shadow-[0_0_20px_rgba(59,130,246,0.4)]">
-                      {isSaving ? 'Saving Updates...' : <><Save className="w-5 h-5 mr-2" /> Save Profile</>}
-                    </Button>
-                  </div>
-                </form>
-              </div>
-            </div>
-
-            {/* RIGHT COLUMN: Medical Records */}
-            <div className="lg:col-span-1 space-y-6">
-              <div className="glass-card p-6 md:p-8 rounded-3xl border border-blue-500/20 bg-gradient-to-b from-blue-500/5 to-transparent relative z-0">
-                <h2 className="text-xl font-black text-foreground flex items-center gap-2 mb-2">
-                  <FileText className="w-5 h-5 text-primary drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]" /> Medical Records
-                </h2>
-                <p className="text-sm text-foreground-muted font-medium mb-6">Manage prescriptions and lab reports.</p>
-                
-                <Button onClick={() => setShowUploadModal(true)} className="w-full flex items-center justify-center gap-2 py-6 bg-blue-500/10 hover:bg-blue-500/20 text-primary border border-blue-500/50 border-dashed rounded-full font-bold transition-all mb-6 hover-wave shadow-[0_0_15px_rgba(59,130,246,0.2)] hover:shadow-[0_0_25px_rgba(59,130,246,0.4)]">
-                  <Plus className="w-5 h-5" /> Upload New Report
-                </Button>
-                
-                <div className="space-y-4">
-                  {records.length === 0 ? (
-                    <p className="text-sm text-foreground-muted italic text-center py-4">No records uploaded yet.</p>
-                  ) : (
-                    records.map((record) => (
-                      <div key={record.id} className="bg-[#111113] border border-zinc-800 p-4 rounded-3xl hover:border-blue-500/50 hover:shadow-[0_0_15px_rgba(59,130,246,0.2)] transition-all group">
-                        
-                        <div className="flex justify-between items-start mb-3">
-                          <div>
-                            <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${
-                              record.report_type === 'Prescription' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400'
-                            }`}>
-                              {record.report_type}
-                            </span>
-                            <h4 className="font-bold text-foreground text-sm mt-2">{record.doctor_name}</h4>
-                            <p className="text-xs text-foreground-muted font-medium">{new Date(record.created_at || Date.now()).toLocaleDateString()}</p>
-                          </div>
-                          
-                          <div className="flex items-center gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button onClick={() => openEditModal(record)} className="p-1.5 bg-amber-500/10 text-amber-500 hover:bg-amber-500 hover:text-white hover:shadow-[0_0_10px_rgba(245,158,11,0.5)] rounded-full transition-all">
-                              <Edit className="w-3.5 h-3.5" />
-                            </button>
-                            <button onClick={() => handleDeleteRecord(record.id)} className="p-1.5 bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white hover:shadow-[0_0_10px_rgba(239,68,68,0.5)] rounded-full transition-all">
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                        
-                        <a 
-                          href={record.file_url} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="w-full flex items-center justify-center text-xs font-bold rounded-full h-9 border border-zinc-700 hover:bg-primary hover:text-white hover:border-primary hover:shadow-[0_0_15px_rgba(59,130,246,0.4)] transition-all mt-1"
-                        >
-                          <Download className="w-3 h-3 mr-2" /> View Report
-                        </a>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-              </div>
-            </div>
-
-          </div>
+            </Reveal>
+          )}
         </div>
       </main>
-      <Footer />
+
+      <SiteFooter />
     </div>
   );
 }

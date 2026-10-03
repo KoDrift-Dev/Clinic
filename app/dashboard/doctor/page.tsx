@@ -1,310 +1,394 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Header } from '@/components/header';
-import { Footer } from '@/components/footer';
-import { Button } from '@/components/ui/button';
+import { SiteHeader } from '@/components/site-header';
+import { SiteFooter } from '@/components/site-footer';
 import { getSessionProfile } from '@/lib/auth';
 import { getProfile, appointmentsForDoctor, updateAppointment, recordsForPatient, createRecord, type Appointment, type Profile, type MedicalRecord } from '@/lib/db';
-import { Users, CheckCircle2, Clock, CalendarX, Activity, Trash2, X, ArrowLeft, FileText, Download, Upload, Plus, User as UserIcon, Droplet, Scale, Ruler, Stethoscope } from 'lucide-react';
-import Link from 'next/link';
+import { Button, Card, Avatar, StatusPill, EmptyState, Modal, Label, Textarea, Reveal } from '@/components/ui-kit';
+import { Users, Clock, BadgeCheck, Wallet, CalendarDays, FileText, Download, FilePlus2, Activity, Droplets, Scale, Ruler, Stethoscope, X } from 'lucide-react';
+
+function isToday(dateStr: string) {
+  const d = new Date(dateStr);
+  const now = new Date();
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+}
+
+function fmtDate(d: string) {
+  const parsed = new Date(d);
+  return isNaN(parsed.getTime()) ? d : parsed.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+const mkPrescriptionDoc = (doctor: Profile, patientName: string, reason: string, notes: string) =>
+  'data:text/plain;charset=utf-8,' +
+  encodeURIComponent(
+    `DIGITAL PRESCRIPTION\n` +
+      `Crescent Care Medibook\n\n` +
+      `Doctor: ${doctor.full_name} — ${doctor.specialty || 'General'}\n` +
+      `${doctor.hospital || ''}${doctor.hospital && doctor.city ? ', ' : ''}${doctor.city || ''}\n\n` +
+      `Patient: ${patientName}\n` +
+      `Date: ${new Date().toLocaleDateString()}\n\n` +
+      `Diagnosis / reason: ${reason || 'General consultation'}\n\n` +
+      `Doctor's notes:\n${notes || '—'}\n\n` +
+      `— ${doctor.full_name}\n` +
+      `This prescription was issued digitally through Crescent Care Medibook.`,
+  );
 
 export default function DoctorDashboard() {
   const router = useRouter();
-  
-  const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [showReport, setShowReport] = useState(false);
-  const [isAuthorized, setIsAuthorized] = useState(false);
-  
-  // Real Doctor Info
-  const [doctorProfile, setDoctorProfile] = useState<Profile | null>(null);
+  const [doctor, setDoctor] = useState<Profile | null>(null);
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
 
-  // Patient File Modal State
-  const [viewingPatient, setViewingPatient] = useState<Appointment | null>(null);
+  // Patient file modal
+  const [fileAppt, setFileAppt] = useState<Appointment | null>(null);
   const [patientProfile, setPatientProfile] = useState<Profile | null>(null);
   const [patientRecords, setPatientRecords] = useState<MedicalRecord[]>([]);
-  const [isUploadingPrescription, setIsUploadingPrescription] = useState(false);
-  const [isLoadingFile, setIsLoadingFile] = useState(false);
+  const [loadingFile, setLoadingFile] = useState(false);
 
-  // --- ROLE GUARD & DOCTOR FETCH ---
+  // Prescription composer
+  const [rxNotes, setRxNotes] = useState('');
+  const [savingRx, setSavingRx] = useState(false);
+
+  // Cancel confirm
+  const [cancelTarget, setCancelTarget] = useState<Appointment | null>(null);
+
   useEffect(() => {
-    const checkRole = async () => {
+    const load = async () => {
       const profile = await getSessionProfile();
-      if (!profile) return router.push('/login');
-      
-      // STRICT GUARD: If not a doctor AND not an admin, kick out. 
-      if (profile?.role !== 'doctor' && profile?.role !== 'admin') {
-        window.location.href = '/'; 
+      if (!profile) {
+        router.replace('/login');
         return;
       }
-      
-      setDoctorProfile(profile); 
-      setIsAuthorized(true);
+      if (profile.role !== 'doctor' && profile.role !== 'admin') {
+        router.replace('/');
+        return;
+      }
+      setDoctor(profile);
+      const data = await appointmentsForDoctor(profile.id);
+      setAppointments(data);
+      setIsLoading(false);
     };
-    checkRole();
+    load();
   }, [router]);
 
-  // 1. Fetch live appointments for this doctor
-  const fetchAppointments = async () => {
-    if (!doctorProfile) return;
-    setIsLoading(true);
-    
-    const data = await appointmentsForDoctor(doctorProfile.id);
-      
-    // Map it securely so your UI doesn't break
-    const mappedAppts = data.map(appt => ({
-      ...appt,
-      patient_name: appt.patient_name || appt.patient?.full_name || 'Unknown Patient'
-    }));
-    setAppointments(mappedAppts);
-    setIsLoading(false);
+  const updateStatus = async (id: string, status: string) => {
+    setAppointments(cur => cur.map(a => (a.id === id ? { ...a, status } : a)));
+    await updateAppointment(id, { status });
+    if (cancelTarget?.id === id) setCancelTarget(null);
   };
 
-  useEffect(() => {
-    if (isAuthorized && doctorProfile) {
-      fetchAppointments();
-    }
-  }, [isAuthorized, doctorProfile]);
-
-  // 2. Database Actions
-  const updateStatus = async (id: string, newStatus: string) => {
-    setAppointments(current => current.map(appt => appt.id === id ? { ...appt, status: newStatus } : appt));
-    await updateAppointment(id, { status: newStatus });
-  };
-
-  // 3. Open Patient File (LIVE FETCH)
-  const handleViewPatient = async (appt: Appointment) => {
-    setViewingPatient(appt);
-    setIsLoadingFile(true);
+  const openFile = async (appt: Appointment) => {
+    setFileAppt(appt);
+    setRxNotes('');
+    setLoadingFile(true);
     setPatientProfile(null);
     setPatientRecords([]);
-
-    // Fetch REAL patient profile
-    const profile = await getProfile(appt.patient_id);
-    if (profile) setPatientProfile(profile);
-
-    // Fetch REAL patient records
-    const records = await recordsForPatient(appt.patient_id);
+    const [profile, records] = await Promise.all([
+      getProfile(appt.patient_id),
+      recordsForPatient(appt.patient_id),
+    ]);
+    setPatientProfile(profile);
     setPatientRecords(records);
-
-    setIsLoadingFile(false);
+    setLoadingFile(false);
   };
 
-  // 4. Upload Prescription (LIVE INSERT)
-  const handleUploadPrescription = async () => {
-    if (!viewingPatient || !doctorProfile) return;
-    
-    setIsUploadingPrescription(true);
-    
-    // Simulate file generation delay
-    await new Promise(resolve => setTimeout(resolve, 1500)); 
-    
-    // Generate a real downloadable prescription document (works fully offline)
-    const rxText = `DIGITAL PRESCRIPTION\n${doctorProfile.full_name} — ${doctorProfile.specialty || 'Doctor'}\n${doctorProfile.hospital || ''}, ${doctorProfile.city || ''}\n\nPatient: ${viewingPatient.patient_name}\nDate: ${new Date().toLocaleDateString()}\n\nDiagnosis: ${viewingPatient.disease || 'General consultation'}\n\nRx:\n1. Take prescribed medication as directed.\n2. Follow up if symptoms persist.\n\n— ${doctorProfile.full_name}`;
-
-    const newRecord = {
-      patient_id: viewingPatient.patient_id,
-      doctor_name: doctorProfile.full_name,
-      title: 'Digital Prescription',
+  const handlePrescribe = async () => {
+    if (!fileAppt || !doctor) return;
+    setSavingRx(true);
+    const patientName = fileAppt.patient_name || patientProfile?.full_name || 'Patient';
+    const record = await createRecord({
+      patient_id: fileAppt.patient_id,
+      doctor_name: doctor.full_name,
+      title: `Digital Prescription — ${new Date().toLocaleDateString()}`,
       report_type: 'Prescription',
       uploaded_by: 'Doctor',
-      file_url: 'data:text/plain;charset=utf-8,' + encodeURIComponent(rxText),
-      created_at: new Date().toISOString()
-    };
-    
-    // Save to local database
-    const data = await createRecord(newRecord);
-    
-    setPatientRecords([data, ...patientRecords]);
-    
-    setIsUploadingPrescription(false);
+      file_url: mkPrescriptionDoc(doctor, patientName, fileAppt.disease || '', rxNotes),
+      created_at: new Date().toISOString(),
+    });
+    setPatientRecords(cur => [record, ...cur]);
+    setRxNotes('');
+    setSavingRx(false);
   };
 
-  // If not authorized yet, show nothing while redirecting
-  if (!isAuthorized) return null;
-
-  // Tables & Reports logic...
-  const pendingQueue = appointments.filter(a => a.status === 'Pending');
-  const completedQueue = appointments.filter(a => a.status === 'Completed');
-
-  const calculateReports = () => {
+  const groups = useMemo(() => {
+    const active = appointments.filter(a => !['Canceled', 'Completed'].includes(a.status));
     return {
-      total: { count: completedQueue.length, revenue: completedQueue.reduce((sum, a) => sum + (a.fee || 0), 0) },
-      pending: { count: pendingQueue.length, revenue: pendingQueue.reduce((sum, a) => sum + (a.fee || 0), 0) },
+      today: active.filter(a => isToday(a.appointment_date)),
+      upcoming: active.filter(a => !isToday(a.appointment_date)),
+      completed: appointments.filter(a => a.status === 'Completed'),
     };
-  };
-  const reports = calculateReports();
+  }, [appointments]);
 
-  const AppointmentTable = ({ title, data, icon: Icon, colorClass }: { title: string, data: Appointment[], icon: any, colorClass: string }) => (
-    <div className="glass-card rounded-3xl border border-blue-100 dark:border-zinc-800 overflow-hidden mb-8">
-      <div className={`p-4 sm:p-6 border-b border-border/50 flex items-center gap-3 ${colorClass}`}>
-        <Icon className="w-5 h-5 sm:w-6 sm:h-6" />
-        <h2 className="text-lg sm:text-xl font-black">{title} ({data.length})</h2>
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-cream-50">
+        <div className="text-center">
+          <div className="size-12 rounded-full border-4 border-brand-200 border-t-brand-600 animate-spin mx-auto mb-4" />
+          <p className="font-display text-xl text-ink-900">Syncing your schedule</p>
+        </div>
       </div>
-      <div className="overflow-x-auto no-scrollbar">
-        <table className="w-full text-left border-collapse min-w-[650px]">
-          <thead>
-            <tr className="bg-black/5 dark:bg-white/5 text-foreground-muted text-[10px] sm:text-xs uppercase tracking-wider">
-              <th className="p-3 sm:p-4 font-bold">Date & Time</th>
-              <th className="p-3 sm:p-4 font-bold">Patient Details</th>
-              <th className="p-3 sm:p-4 font-bold">Type</th>
-              <th className="p-3 sm:p-4 font-bold text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border/50">
-            {data.length === 0 ? (
-              <tr><td colSpan={4} className="p-6 sm:p-8 text-center text-foreground-muted font-bold text-sm">No appointments found.</td></tr>
-            ) : (
-              data.map((appt) => (
-                <tr key={appt.id} className="hover:bg-black/5 dark:hover:bg-white/5 transition-colors">
-                  <td className="p-3 sm:p-4">
-                    <div className="font-bold text-foreground text-sm sm:text-base">{appt.appointment_time}</div>
-                    <div className="text-[10px] sm:text-xs text-foreground-muted font-medium">{new Date(appt.appointment_date).toLocaleDateString()}</div>
-                  </td>
-                  <td className="p-3 sm:p-4">
-                    <div className="font-bold text-foreground text-sm sm:text-base">{appt.patient_name}</div>
-                    <div className="text-[10px] sm:text-xs text-red-400 font-bold bg-red-500/10 w-fit px-2 py-0.5 rounded-md mt-1">{appt.disease || 'General'}</div>
-                  </td>
-                  <td className="p-3 sm:p-4 text-foreground-muted font-medium text-xs sm:text-sm">{appt.type || 'Standard'}</td>
-                  <td className="p-3 sm:p-4 text-right">
-                    <div className="flex flex-col sm:flex-row justify-end gap-2">
-                      <button onClick={() => handleViewPatient(appt)} className="text-[10px] sm:text-xs font-bold bg-blue-500/10 text-blue-500 hover:bg-blue-500 hover:text-white px-3 py-1.5 sm:py-2 rounded-lg transition-colors whitespace-nowrap">
-                        View File
-                      </button>
-                      {appt.status === 'Pending' && (
-                        <button onClick={() => updateStatus(appt.id, 'Completed')} className="text-[10px] sm:text-xs font-bold bg-green-500/20 text-green-500 hover:bg-green-500 hover:text-white px-3 py-1.5 sm:py-2 rounded-lg transition-colors whitespace-nowrap">
-                          Mark Complete
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+    );
+  }
+
+  const completedRevenue = groups.completed.reduce((sum, a) => sum + (a.fee || 0), 0);
+  const pendingRevenue = [...groups.today, ...groups.upcoming].reduce((sum, a) => sum + (a.fee || 0), 0);
+
+  const stats = [
+    { label: "Today's patients", value: groups.today.length, icon: Users, tone: 'bg-brand-50 text-brand-700' },
+    { label: 'Pending queue', value: groups.upcoming.length + groups.today.filter(a => a.status === 'Pending').length, icon: Clock, tone: 'bg-glow-100 text-[#8a5a12]' },
+    { label: 'Completed visits', value: groups.completed.length, icon: BadgeCheck, tone: 'bg-brand-50 text-brand-700' },
+    { label: 'Revenue (completed)', value: `Rs. ${completedRevenue.toLocaleString()}`, icon: Wallet, tone: 'bg-pine-900 text-white' },
+  ];
+
+  const RowActions = ({ appt }: { appt: Appointment }) => (
+    <div className="flex flex-wrap justify-end gap-2">
+      <Button variant="outline" size="sm" onClick={() => openFile(appt)}>
+        <FileText className="size-3.5" /> Patient file
+      </Button>
+      {appt.status === 'Pending' && (
+        <Button variant="secondary" size="sm" onClick={() => updateStatus(appt.id, 'Confirmed')}>
+          Confirm
+        </Button>
+      )}
+      {(appt.status === 'Pending' || appt.status === 'Confirmed') && (
+        <Button variant="primary" size="sm" onClick={() => updateStatus(appt.id, 'Completed')}>
+          Mark complete
+        </Button>
+      )}
+      {!['Canceled', 'Completed'].includes(appt.status) && (
+        <Button variant="danger" size="sm" onClick={() => setCancelTarget(appt)}>
+          Cancel
+        </Button>
+      )}
     </div>
   );
 
+  const ApptTable = ({ title, data, emptyCopy, icon: Icon }: { title: string; data: Appointment[]; emptyCopy: string; icon: typeof Users }) => (
+    <Card className="overflow-hidden">
+      <div className="px-6 py-5 border-b border-ink-900/[0.07] flex items-center gap-3">
+        <span className="size-10 rounded-2xl bg-brand-50 text-brand-700 flex items-center justify-center">
+          <Icon className="size-5" />
+        </span>
+        <h2 className="font-display text-xl font-semibold text-ink-900">{title}</h2>
+        <span className="ml-auto font-display text-2xl font-semibold text-ink-900 tnum">{data.length}</span>
+      </div>
+      {data.length === 0 ? (
+        <EmptyState title={title} copy={emptyCopy} />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left min-w-[680px]">
+            <thead>
+              <tr className="bg-cream-50 text-ink-500 text-[11px] uppercase tracking-wider">
+                <th className="p-4 font-bold">Date & time</th>
+                <th className="p-4 font-bold">Patient</th>
+                <th className="p-4 font-bold">Reason</th>
+                <th className="p-4 font-bold">Status</th>
+                <th className="p-4 font-bold text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-ink-900/[0.06]">
+              {data.map(appt => (
+                <tr key={appt.id} className="hover:bg-cream-50/60 transition-colors">
+                  <td className="p-4">
+                    <div className="font-bold text-ink-900 text-sm">{fmtDate(appt.appointment_date)}</div>
+                    <div className="text-xs text-ink-500">{appt.appointment_time}</div>
+                  </td>
+                  <td className="p-4">
+                    <div className="flex items-center gap-2.5">
+                      <Avatar name={appt.patient_name || appt.patient?.full_name || 'Patient'} size="sm" />
+                      <span className="font-bold text-ink-900 text-sm">{appt.patient_name || appt.patient?.full_name || 'Unknown'}</span>
+                    </div>
+                  </td>
+                  <td className="p-4 text-sm text-ink-500 max-w-44 truncate">{appt.disease || 'General consultation'}</td>
+                  <td className="p-4"><StatusPill status={appt.status} /></td>
+                  <td className="p-4"><RowActions appt={appt} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+
   return (
-    <div className="min-h-screen flex flex-col bg-background relative">
-      <Header />
-      
-      {/* PATIENT FILE MODAL (DOCTOR'S VIEW) */}
-      {viewingPatient && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setViewingPatient(null)} />
-          <div className="glass-card bg-[#0a0a0c]/95 w-full max-w-4xl max-h-[95vh] sm:max-h-[90vh] overflow-y-auto rounded-2xl sm:rounded-3xl z-10 border border-blue-500/30 shadow-[0_0_50px_rgba(59,130,246,0.15)] animate-in zoom-in-95">
-            
-            <div className="sticky top-0 bg-[#0a0a0c]/90 backdrop-blur-md p-4 sm:p-6 border-b border-border/50 flex justify-between items-center z-20">
-              <h2 className="text-lg sm:text-2xl font-black text-foreground flex items-center gap-2 sm:gap-3">
-                <UserIcon className="w-5 h-5 sm:w-6 sm:h-6 text-primary shrink-0" /> <span className="truncate">{viewingPatient.patient_name}'s File</span>
-              </h2>
-              <button onClick={() => setViewingPatient(null)} className="p-1.5 sm:p-2 hover:bg-white/10 rounded-full shrink-0"><X className="w-5 h-5 sm:w-6 sm:h-6 text-foreground"/></button>
-            </div>
+    <div className="min-h-screen flex flex-col bg-cream-50">
+      <SiteHeader />
 
-            <div className="p-4 sm:p-6 md:p-8">
-              {isLoadingFile ? (
-                 <div className="text-center py-10 font-bold text-primary animate-pulse text-sm sm:text-base">Loading secure patient records...</div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 sm:gap-8">
-                  {/* Left Column: Health Profile */}
-                  <div className="space-y-4 sm:space-y-6">
-                    <div className="bg-[#111113] border border-zinc-800 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
-                      <h3 className="text-base sm:text-lg font-bold text-foreground mb-3 sm:mb-4 flex items-center gap-2 border-b border-zinc-800 pb-2 sm:pb-3"><Activity className="w-4 h-4 sm:w-5 sm:h-5 text-red-500"/> Vitals & Bio</h3>
-                      <div className="grid grid-cols-2 gap-3 sm:gap-4">
-                        <div><p className="text-[10px] sm:text-xs text-foreground-muted font-bold uppercase mb-1">Blood</p><p className="font-black text-red-400 text-sm sm:text-lg flex items-center gap-1"><Droplet className="w-3 h-3 sm:w-4 sm:h-4"/> {patientProfile?.blood_group || 'N/A'}</p></div>
-                        <div><p className="text-[10px] sm:text-xs text-foreground-muted font-bold uppercase mb-1">Gender</p><p className="font-black text-foreground text-sm sm:text-base">{patientProfile?.gender || 'N/A'}</p></div>
-                        <div><p className="text-[10px] sm:text-xs text-foreground-muted font-bold uppercase mb-1">Weight</p><p className="font-black text-foreground text-sm sm:text-base flex items-center gap-1"><Scale className="w-3 h-3 sm:w-4 sm:h-4 text-emerald-500"/> {patientProfile?.weight || 'N/A'}</p></div>
-                        <div><p className="text-[10px] sm:text-xs text-foreground-muted font-bold uppercase mb-1">Height</p><p className="font-black text-foreground text-sm sm:text-base flex items-center gap-1"><Ruler className="w-3 h-3 sm:w-4 sm:h-4 text-emerald-500"/> {patientProfile?.height || 'N/A'}</p></div>
-                      </div>
-                    </div>
-
-                    <div className="bg-[#111113] border border-zinc-800 rounded-2xl sm:rounded-3xl p-4 sm:p-6 space-y-3 sm:space-y-4">
-                      <div><p className="text-[10px] sm:text-xs text-foreground-muted font-bold uppercase mb-1 flex items-center gap-1"><Stethoscope className="w-3 h-3 text-amber-500"/> Appointment Reason</p><p className="font-medium text-amber-400 bg-amber-500/10 p-2 sm:p-3 rounded-lg sm:rounded-xl border border-amber-500/20 text-sm sm:text-base">{viewingPatient.disease || 'General Checkup'}</p></div>
-                      <div><p className="text-[10px] sm:text-xs text-foreground-muted font-bold uppercase mb-1">Allergies</p><p className="font-bold text-foreground text-sm sm:text-base">{patientProfile?.allergies || 'None recorded'}</p></div>
-                      <div><p className="text-[10px] sm:text-xs text-foreground-muted font-bold uppercase mb-1">Chronic Diseases</p><p className="font-bold text-foreground text-sm sm:text-base">{patientProfile?.chronic_diseases || 'None recorded'}</p></div>
-                    </div>
-                  </div>
-
-                  {/* Right Column: Lab Reports & Prescriptions */}
-                  <div className="space-y-4 sm:space-y-6">
-                    <div className="bg-blue-500/5 border border-blue-500/20 rounded-2xl sm:rounded-3xl p-4 sm:p-6 h-full flex flex-col">
-                      <h3 className="text-base sm:text-lg font-bold text-foreground mb-3 sm:mb-4 flex items-center justify-between border-b border-blue-500/20 pb-2 sm:pb-3">
-                        <span className="flex items-center gap-2"><FileText className="w-4 h-4 sm:w-5 sm:h-5 text-primary"/> Medical Records</span>
-                      </h3>
-
-                      <div className="flex-1 space-y-2 sm:space-y-3 overflow-y-auto max-h-[250px] sm:max-h-[300px] pr-1 sm:pr-2 mb-4">
-                        {patientRecords.length === 0 ? (
-                           <p className="text-xs sm:text-sm text-foreground-muted italic text-center py-4">No records found for this patient.</p>
-                        ) : (
-                          patientRecords.map((record, idx) => (
-                            <div key={idx} className="bg-[#111113] border border-zinc-800 p-2.5 sm:p-3 rounded-xl sm:rounded-2xl flex justify-between items-center group hover:border-blue-500/50 transition-colors">
-                              <div className="truncate pr-2">
-                                <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 rounded-full ${record.report_type === 'Prescription' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400'}`}>{record.report_type}</span>
-                                <p className="text-xs sm:text-sm font-bold text-foreground mt-1 truncate">{record.title || record.file_url}</p>
-                                <p className="text-[8px] sm:text-[10px] text-foreground-muted font-medium truncate">{record.doctor_name} • {new Date(record.created_at || Date.now()).toLocaleDateString()}</p>
-                              </div>
-                              <a href={record.file_url} target="_blank" rel="noopener noreferrer" className="p-1.5 sm:p-2 bg-zinc-800 hover:bg-primary text-white rounded-lg sm:rounded-xl transition-colors shrink-0"><Download className="w-3 h-3 sm:w-4 sm:h-4"/></a>
-                            </div>
-                          ))
-                        )}
-                      </div>
-
-                      <Button onClick={handleUploadPrescription} disabled={isUploadingPrescription} className="w-full bg-primary hover:bg-blue-600 text-white rounded-full font-bold py-5 sm:py-6 hover-wave shadow-glow border-0 mt-auto text-xs sm:text-sm">
-                        {isUploadingPrescription ? 'Generating...' : <><Plus className="w-4 h-4 sm:w-5 sm:h-5 mr-1.5 sm:mr-2" /> Digital Prescription</>}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+      {/* Cancel confirm */}
+      <Modal open={!!cancelTarget} onClose={() => setCancelTarget(null)}>
+        <div className="p-8 text-center">
+          <div className="size-14 rounded-full bg-red-50 border border-red-200 flex items-center justify-center mx-auto mb-4">
+            <X className="size-6 text-red-600" />
+          </div>
+          <h3 className="font-display text-2xl font-semibold text-ink-900">Cancel this appointment?</h3>
+          <p className="text-ink-500 text-sm mt-2">{cancelTarget?.patient_name || 'The patient'} will need to book again.</p>
+          <div className="flex gap-3 mt-6">
+            <Button variant="outline" className="flex-1" onClick={() => setCancelTarget(null)}>Keep it</Button>
+            <Button variant="danger" className="flex-1" onClick={() => cancelTarget && updateStatus(cancelTarget.id, 'Canceled')}>Yes, cancel</Button>
           </div>
         </div>
-      )}
+      </Modal>
 
-      {/* Report Modal */}
-      {showReport && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShowReport(false)} />
-          <div className="glass-card bg-background/95 w-full max-w-lg rounded-2xl sm:rounded-3xl z-10 p-5 sm:p-8 border border-blue-500/30 shadow-glow animate-in zoom-in-95">
-            <div className="flex justify-between items-center mb-4 sm:mb-6 border-b border-border/50 pb-3 sm:pb-4">
-              <h2 className="text-xl sm:text-2xl font-black text-foreground flex items-center gap-2"><Activity className="w-5 h-5 sm:w-6 sm:h-6 text-primary"/> Financial Report</h2>
-              <button onClick={() => setShowReport(false)} className="p-1.5 sm:p-2 hover:bg-white/10 rounded-full"><X className="w-4 h-4 sm:w-5 sm:h-5"/></button>
-            </div>
-            <div className="space-y-3 sm:space-y-4">
-              <div className="flex justify-between items-center p-3 sm:p-4 bg-white/5 rounded-xl sm:rounded-2xl"><div><p className="text-xs sm:text-sm text-foreground-muted font-bold">Total Completed</p><p className="text-lg sm:text-xl font-black">{reports.total.count} Patients</p></div><div className="text-right"><p className="text-xs sm:text-sm text-foreground-muted font-bold">Revenue</p><p className="text-xl sm:text-2xl font-black text-green-400">Rs. {reports.total.revenue}</p></div></div>
-              <div className="flex justify-between items-center p-3 sm:p-4 bg-white/5 rounded-xl sm:rounded-2xl"><div><p className="text-xs sm:text-sm text-foreground-muted font-bold">Pending Revenue</p><p className="text-lg sm:text-xl font-black">{reports.pending.count} Patients</p></div><div className="text-right"><p className="text-xs sm:text-sm text-foreground-muted font-bold">Expected</p><p className="text-xl sm:text-2xl font-black text-amber-400">Rs. {reports.pending.revenue}</p></div></div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Patient file modal */}
+      <Modal open={!!fileAppt} onClose={() => setFileAppt(null)} wide>
+        <div className="p-6 sm:p-8">
+          <h3 className="font-display text-2xl font-semibold text-ink-900 flex items-center gap-3 pr-10">
+            <Avatar name={fileAppt?.patient_name || 'Patient'} size="md" />
+            <span>
+              {fileAppt?.patient_name || 'Patient'}
+              <span className="block text-sm font-sans font-medium text-ink-500">Appointment · {fileAppt && fmtDate(fileAppt.appointment_date)} · {fileAppt?.appointment_time}</span>
+            </span>
+          </h3>
 
-      <main className="flex-1 py-8 sm:py-10 md:py-16 relative overflow-hidden">
-        <div className="absolute top-0 right-1/4 w-64 h-64 sm:w-96 sm:h-96 bg-blue-500/10 rounded-full blur-3xl -z-10" />
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6 sm:space-y-8">
-          <Link href="/" className="inline-flex items-center gap-1.5 sm:gap-2 text-foreground-muted hover:text-primary font-bold mb-1 sm:mb-2 transition-colors text-sm sm:text-base"><ArrowLeft className="w-4 h-4 sm:w-5 sm:h-5" /> Back to Home</Link>
-          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-            <div>
-              <h1 className="text-2xl sm:text-3xl md:text-4xl font-black text-foreground">
-                Welcome back, <span className="text-primary dark:text-blue-400">{doctorProfile?.full_name || 'Doctor'}</span>
-              </h1>
-              <p className="text-xs sm:text-sm text-foreground-muted font-medium mt-1">Live Database View • {new Date().toLocaleDateString()}</p>
+          {loadingFile ? (
+            <div className="py-12 text-center">
+              <div className="size-10 rounded-full border-4 border-brand-200 border-t-brand-600 animate-spin mx-auto mb-3" />
+              <p className="text-sm font-bold text-ink-500">Loading patient file…</p>
             </div>
-            <Button onClick={() => setShowReport(true)} className="w-full md:w-auto rounded-full bg-foreground text-background hover:bg-foreground/90 font-bold hover-wave text-xs sm:text-sm"><Activity className="w-4 h-4 mr-2" /> View Analytics Report</Button>
-          </div>
-          {isLoading ? ( <div className="text-center py-20 font-bold text-primary animate-pulse text-sm sm:text-base">Syncing with secure server...</div> ) : (
-            <>
-              <AppointmentTable title="Pending Queue" data={pendingQueue} icon={Clock} colorClass="text-amber-500" />
-              <AppointmentTable title="Completed Appointments" data={completedQueue} icon={CheckCircle2} colorClass="text-green-500" />
-            </>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+              {/* Vitals */}
+              <div>
+                <Card className="p-6">
+                  <h4 className="font-bold text-ink-900 flex items-center gap-2 mb-4">
+                    <Activity className="size-4 text-red-600" /> Vitals & health notes
+                  </h4>
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                    <div><dt className="text-[11px] uppercase tracking-wide font-bold text-ink-500 flex items-center gap-1"><Droplets className="size-3.5 text-red-500" /> Blood group</dt><dd className="font-bold text-ink-900">{patientProfile?.blood_group || '—'}</dd></div>
+                    <div><dt className="text-[11px] uppercase tracking-wide font-bold text-ink-500">Gender</dt><dd className="font-bold text-ink-900">{patientProfile?.gender || '—'}</dd></div>
+                    <div><dt className="text-[11px] uppercase tracking-wide font-bold text-ink-500 flex items-center gap-1"><Scale className="size-3.5 text-brand-600" /> Weight</dt><dd className="font-bold text-ink-900">{patientProfile?.weight || '—'}</dd></div>
+                    <div><dt className="text-[11px] uppercase tracking-wide font-bold text-ink-500 flex items-center gap-1"><Ruler className="size-3.5 text-brand-600" /> Height</dt><dd className="font-bold text-ink-900">{patientProfile?.height || '—'}</dd></div>
+                  </dl>
+                  <div className="mt-4 pt-4 border-t border-ink-900/[0.07] space-y-3 text-sm">
+                    <div><p className="text-[11px] uppercase tracking-wide font-bold text-ink-500">Allergies</p><p className="font-medium text-ink-900">{patientProfile?.allergies || 'None recorded'}</p></div>
+                    <div><p className="text-[11px] uppercase tracking-wide font-bold text-ink-500">Chronic diseases</p><p className="font-medium text-ink-900">{patientProfile?.chronic_diseases || 'None recorded'}</p></div>
+                  </div>
+                  <div className="mt-4 pt-4 border-t border-ink-900/[0.07]">
+                    <p className="text-[11px] uppercase tracking-wide font-bold text-ink-500 flex items-center gap-1.5"><Stethoscope className="size-3.5 text-glow-400" /> Appointment reason</p>
+                    <p className="mt-1.5 text-sm font-medium text-[#8a5a12] bg-glow-100 border border-[#ecd9a8] rounded-2xl px-4 py-3">{fileAppt?.disease || 'General consultation'}</p>
+                  </div>
+                </Card>
+              </div>
+
+              {/* Records + prescription */}
+              <div className="space-y-6">
+                <Card className="p-6">
+                  <h4 className="font-bold text-ink-900 flex items-center gap-2 mb-4">
+                    <FileText className="size-4 text-brand-600" /> Medical records ({patientRecords.length})
+                  </h4>
+                  <div className="space-y-2.5 max-h-56 overflow-y-auto pr-1">
+                    {patientRecords.length === 0 ? (
+                      <p className="text-sm text-ink-500 italic">No records on file for this patient.</p>
+                    ) : (
+                      patientRecords.map(rec => (
+                        <div key={rec.id} className="flex items-center justify-between gap-3 border border-ink-900/[0.08] rounded-2xl px-4 py-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-bold text-ink-900 truncate">{rec.title || rec.report_type || 'Report'}</p>
+                            <p className="text-xs text-ink-500 truncate">{rec.report_type || ''} · {rec.created_at ? new Date(rec.created_at).toLocaleDateString() : ''}</p>
+                          </div>
+                          {rec.file_url && (
+                            <a href={rec.file_url} download={rec.title || 'report'} className="shrink-0">
+                              <Button variant="outline" size="sm" className="px-3"><Download className="size-3.5" /></Button>
+                            </a>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </Card>
+
+                <Card className="p-6">
+                  <h4 className="font-bold text-ink-900 flex items-center gap-2 mb-1">
+                    <FilePlus2 className="size-4 text-brand-600" /> Digital prescription
+                  </h4>
+                  <p className="text-xs text-ink-500 mb-3">Write your notes — a downloadable prescription document is saved to the patient&apos;s file.</p>
+                  <Label htmlFor="rx-notes">Prescription notes</Label>
+                  <Textarea id="rx-notes" placeholder="e.g. Tab. Paracetamol 500mg — twice daily after meals for 5 days…" value={rxNotes} onChange={e => setRxNotes(e.target.value)} />
+                  <Button onClick={handlePrescribe} loading={savingRx} className="w-full mt-4">
+                    <FilePlus2 className="size-4" /> Save prescription
+                  </Button>
+                </Card>
+              </div>
+            </div>
           )}
         </div>
+      </Modal>
+
+      <main className="flex-1">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-14 space-y-10">
+          <Reveal>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5">
+              <div className="flex items-center gap-4">
+                <Avatar name={doctor?.full_name || 'Doctor'} size="lg" />
+                <div>
+                  <span className="eyebrow">Doctor dashboard</span>
+                  <h1 className="font-display text-3xl sm:text-4xl font-semibold text-ink-900 tracking-tight mt-1">
+                    Dr. {doctor?.full_name?.replace(/^Dr\.\s*/i, '') || '—'}
+                  </h1>
+                  <p className="text-ink-500 text-sm mt-1">{doctor?.specialty || ''}{doctor?.hospital ? ` · ${doctor.hospital}` : ''}</p>
+                </div>
+              </div>
+              <StatusPill status="Live" />
+            </div>
+          </Reveal>
+
+          {/* Stat cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {stats.map((s, i) => (
+              <Reveal key={s.label} delay={i * 80}>
+                <Card className="lift p-5 flex items-center gap-3.5">
+                  <span className={`size-11 rounded-2xl flex items-center justify-center shrink-0 ${s.tone}`}>
+                    <s.icon className="size-5" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="font-display text-xl sm:text-2xl font-semibold text-ink-900 tnum truncate">{s.value}</p>
+                    <p className="text-xs text-ink-500 font-medium">{s.label}</p>
+                  </div>
+                </Card>
+              </Reveal>
+            ))}
+          </div>
+
+          {/* Financial summary band */}
+          <Reveal>
+            <div className="bg-pine-900 rounded-3xl p-6 sm:p-8 relative overflow-hidden">
+              <div className="absolute inset-0 dot-grid-light opacity-40" aria-hidden />
+              <div className="absolute -top-24 -right-24 size-72 rounded-full bg-brand-500/20 blur-3xl" aria-hidden />
+              <div className="relative flex flex-col sm:flex-row sm:items-center gap-6 sm:gap-10">
+                <div>
+                  <span className="eyebrow on-dark">Financial summary</span>
+                  <h2 className="font-display text-2xl sm:text-3xl font-semibold text-white mt-2">Your practice at a glance</h2>
+                </div>
+                <div className="flex flex-wrap gap-8 sm:gap-12 sm:ml-auto">
+                  <div>
+                    <p className="text-white/60 text-xs font-bold uppercase tracking-wide">Earned (completed)</p>
+                    <p className="font-display text-3xl font-semibold text-white tnum mt-1">Rs. {completedRevenue.toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-white/60 text-xs font-bold uppercase tracking-wide">Expected (queued)</p>
+                    <p className="font-display text-3xl font-semibold text-glow-400 tnum mt-1">Rs. {pendingRevenue.toLocaleString()}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Reveal>
+
+          <Reveal>
+            <ApptTable title="Today's schedule" data={groups.today} icon={CalendarDays} emptyCopy="Nothing booked for today. New requests will appear here." />
+          </Reveal>
+          <Reveal>
+            <ApptTable title="Upcoming queue" data={groups.upcoming} icon={Clock} emptyCopy="No upcoming appointments beyond today." />
+          </Reveal>
+          <Reveal>
+            <ApptTable title="Completed visits" data={groups.completed} icon={BadgeCheck} emptyCopy="No completed visits yet." />
+          </Reveal>
+        </div>
       </main>
-      <Footer />
+
+      <SiteFooter />
     </div>
   );
 }

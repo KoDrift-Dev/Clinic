@@ -1,350 +1,420 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { SiteHeader } from '@/components/site-header';
+import { SiteFooter } from '@/components/site-footer';
 import { getSessionProfile } from '@/lib/auth';
-import { listDoctors, listPatients, listAppointments, updateProfile, deleteProfile, deleteAppointment, type Profile, type Appointment } from '@/lib/db';
-import { Header } from '@/components/header';
-import { ShieldAlert, Activity, Users, Stethoscope, Calendar, Trash2, Edit, X, Save, Clock, Server } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import {
+  listDoctors, listPatients, listAppointments, updateProfile, deleteProfile,
+  deleteAppointment, resetDemoData, listContactMessages,
+  type Profile, type Appointment, type ContactMessage,
+} from '@/lib/db';
+import { Button, Card, Avatar, StatusPill, EmptyState, Modal, Input, Label, Badge, Reveal } from '@/components/ui-kit';
+import {
+  Activity, Users, Stethoscope, CalendarDays, Wallet, Trash2, Pencil, X, Save,
+  Search, RotateCcw, Inbox, ShieldCheck, ChevronDown,
+} from 'lucide-react';
+
+type Tab = 'overview' | 'doctors' | 'patients' | 'appointments' | 'messages';
+
+const TABS: { id: Tab; label: string; icon: typeof Activity }[] = [
+  { id: 'overview', label: 'Overview', icon: Activity },
+  { id: 'doctors', label: 'Doctors', icon: Stethoscope },
+  { id: 'patients', label: 'Patients', icon: Users },
+  { id: 'appointments', label: 'Appointments', icon: CalendarDays },
+  { id: 'messages', label: 'Inbox', icon: Inbox },
+];
+
+const STATUSES = ['All', 'Pending', 'Confirmed', 'Completed', 'Canceled'];
 
 export default function AdminDashboard() {
   const router = useRouter();
-
-  const [activeTab, setActiveTab] = useState<'overview' | 'doctors' | 'patients' | 'timeline'>('overview');
   const [isLoading, setIsLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<Tab>('overview');
 
-  // Real-time System Health States
-  const [dbStatus, setDbStatus] = useState<'Checking...' | 'Operational' | 'Degraded'>('Checking...');
-  const [authStatus, setAuthStatus] = useState<'Checking...' | 'Operational' | 'Degraded'>('Checking...');
-  const [storageStatus, setStorageStatus] = useState<'Checking...' | 'Operational' | 'Degraded'>('Checking...');
-
-  // Master Data States
   const [doctors, setDoctors] = useState<Profile[]>([]);
   const [patients, setPatients] = useState<Profile[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [messages, setMessages] = useState<ContactMessage[]>([]);
 
-  // Editing State
+  // Edit user modal
   const [editingUser, setEditingUser] = useState<Profile | null>(null);
   const [editForm, setEditForm] = useState<Partial<Profile>>({});
   const [isSaving, setIsSaving] = useState(false);
 
+  // Appointments filters
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('All');
+  const [resetting, setResetting] = useState(false);
+
   useEffect(() => {
-    const fetchGodModeData = async () => {
-      // 1. CHECK LOCAL SESSION (local demo mode — no auth server)
+    const load = async () => {
       const profile = await getSessionProfile();
       if (!profile) {
-        setAuthStatus('Degraded');
-        return router.push('/login');
-      }
-      setAuthStatus('Operational');
-
-      // Verify Admin Role
-      if (profile?.role !== 'admin') {
-        window.location.href = '/';
+        router.replace('/login');
         return;
       }
-
-      // 2. LOAD DATA FROM LOCAL DATABASE
-      const [docs, pats, appts] = await Promise.all([
+      if (profile.role !== 'admin') {
+        router.replace('/');
+        return;
+      }
+      const [docs, pats, appts, msgs] = await Promise.all([
         listDoctors(),
         listPatients(),
-        listAppointments()
+        listAppointments(),
+        listContactMessages(),
       ]);
-
       setDoctors(docs);
       setPatients(pats);
       setAppointments(appts);
-      setDbStatus('Operational');
-
-      // 3. LOCAL STORAGE HEALTH (replaces cloud storage ping)
-      try {
-        window.localStorage.setItem('medibook_healthcheck', 'ok');
-        window.localStorage.removeItem('medibook_healthcheck');
-        setStorageStatus('Operational');
-      } catch {
-        setStorageStatus('Degraded');
-      }
-
+      setMessages(msgs);
       setIsLoading(false);
     };
-
-    fetchGodModeData();
+    load();
   }, [router]);
-
-  // --- CRUD OPERATIONS ---
-  const handleEditClick = (user: Profile) => {
-    setEditingUser(user);
-    setEditForm(user); 
-  };
 
   const handleSaveUser = async () => {
     if (!editingUser) return;
     setIsSaving(true);
-    const { id, ...patch } = editForm;
-    const updated = await updateProfile(editingUser.id, patch);
-
+    const updated = await updateProfile(editingUser.id, { ...editForm, id: undefined });
     if (updated) {
-      if (editingUser.role === 'doctor') {
-        setDoctors(docs => docs.map(d => d.id === editingUser.id ? { ...d, ...editForm } : d));
-      } else {
-        setPatients(pats => pats.map(p => p.id === editingUser.id ? { ...p, ...editForm } : p));
-      }
+      if (editingUser.role === 'doctor') setDoctors(ds => ds.map(d => (d.id === editingUser.id ? { ...d, ...editForm } : d)));
+      else setPatients(ps => ps.map(p => (p.id === editingUser.id ? { ...p, ...editForm } : p)));
       setEditingUser(null);
-    } else {
-      alert("Error saving updates. Please try again.");
     }
     setIsSaving(false);
   };
 
   const handleDeleteUser = async (id: string, role: string) => {
-    if (!window.confirm(`Are you sure you want to permanently delete this ${role}? This action cannot be undone.`)) return;
-    
+    if (!window.confirm(`Permanently delete this ${role}? This cannot be undone.`)) return;
     await deleteProfile(id);
-    if (role === 'doctor') setDoctors(docs => docs.filter(d => d.id !== id));
-    if (role === 'patient') setPatients(pats => pats.filter(p => p.id !== id));
+    if (role === 'doctor') setDoctors(ds => ds.filter(d => d.id !== id));
+    else setPatients(ps => ps.filter(p => p.id !== id));
   };
 
   const handleDeleteAppointment = async (id: string) => {
     if (!window.confirm('Delete this appointment record forever?')) return;
     await deleteAppointment(id);
-    setAppointments(appts => appts.filter(a => a.id !== id));
+    setAppointments(as => as.filter(a => a.id !== id));
   };
 
-  // Metrics
-  const totalRevenue = appointments.filter(a => a.status === 'Completed').reduce((sum, a) => sum + (a.fee || 0), 0);
-  const platformCut = totalRevenue * 0.10; 
+  const handleReset = async () => {
+    if (!window.confirm('Reset all demo data back to the original seed? Your changes will be lost.')) return;
+    setResetting(true);
+    await resetDemoData();
+    window.location.reload();
+  };
 
-  // Common Input Style
-  const inputClass = "w-full bg-[#0a0a0c] border border-zinc-800 text-white px-4 py-3 rounded-lg focus:outline-none focus:border-purple-500 transition-colors font-medium";
+  const totalRevenue = useMemo(
+    () => appointments.filter(a => a.status === 'Completed').reduce((s, a) => s + (a.fee || 0), 0),
+    [appointments],
+  );
 
-  // Reusable System Status Component (Made Responsive)
-  const StatusIndicator = ({ name, status }: { name: string, status: string }) => {
-    const isGood = status === 'Operational';
-    const isChecking = status === 'Checking...';
-    
+  const filteredAppointments = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return appointments.filter(a => {
+      const matchesStatus = statusFilter === 'All' || a.status === statusFilter;
+      const hay = `${a.patient_name || ''} ${a.patient?.full_name || ''} ${a.doctor?.full_name || ''} ${a.appointment_date} ${a.appointment_time}`.toLowerCase();
+      return matchesStatus && (!q || hay.includes(q));
+    });
+  }, [appointments, search, statusFilter]);
+
+  if (isLoading) {
     return (
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-0 p-4 bg-black/40 rounded-lg border border-zinc-800/50">
-        <span className="font-bold text-zinc-300">{name}</span>
-        <span className={`text-sm font-black flex items-center gap-2 ${isGood ? 'text-emerald-500' : isChecking ? 'text-amber-500' : 'text-red-500'}`}>
-          <div className={`w-2 h-2 rounded-full ${isGood ? 'bg-emerald-500' : isChecking ? 'bg-amber-500' : 'bg-red-500'} animate-pulse`} /> 
-          {status}
-        </span>
+      <div className="min-h-screen flex items-center justify-center bg-cream-50">
+        <div className="text-center">
+          <div className="size-12 rounded-full border-4 border-brand-200 border-t-brand-600 animate-spin mx-auto mb-4" />
+          <p className="font-display text-xl text-ink-900">Loading command center</p>
+        </div>
       </div>
     );
-  };
+  }
 
-  if (isLoading) return <div className="min-h-screen bg-[#050507] flex items-center justify-center font-black text-purple-500 animate-pulse text-lg sm:text-xl"><ShieldAlert className="mr-3"/> Initializing God Mode...</div>;
+  const stats = [
+    { label: 'Doctors', value: doctors.length, icon: Stethoscope, tone: 'bg-brand-50 text-brand-700' },
+    { label: 'Patients', value: patients.length, icon: Users, tone: 'bg-brand-50 text-brand-700' },
+    { label: 'Appointments', value: appointments.length, icon: CalendarDays, tone: 'bg-glow-100 text-[#8a5a12]' },
+    { label: 'Revenue (completed)', value: `Rs. ${totalRevenue.toLocaleString()}`, icon: Wallet, tone: 'bg-pine-900 text-white' },
+  ];
+
+  const UserRow = ({ user }: { user: Profile }) => (
+    <tr className="hover:bg-cream-50/60 transition-colors">
+      <td className="p-4">
+        <div className="flex items-center gap-3">
+          <Avatar name={user.full_name} size="sm" />
+          <div>
+            <p className="font-bold text-ink-900 text-sm">{user.full_name}</p>
+            <p className="text-xs text-ink-500">{user.email}</p>
+          </div>
+        </div>
+      </td>
+      <td className="p-4 text-sm text-ink-500">
+        {user.role === 'doctor' ? (
+          <>
+            <p className="font-bold text-brand-700">{user.specialty || 'Unassigned'}</p>
+            <p className="text-xs">{user.hospital || 'No clinic'} · {user.city || 'No city'}</p>
+          </>
+        ) : (
+          <>
+            <p>{user.phone || 'No phone'}</p>
+            <p className="text-xs">Blood: {user.blood_group || '—'}</p>
+          </>
+        )}
+      </td>
+      {user.role === 'doctor' && (
+        <td className="p-4 font-display font-semibold text-ink-900 tnum">Rs. {(user.fee || 0).toLocaleString()}</td>
+      )}
+      <td className="p-4 text-right whitespace-nowrap">
+        <button
+          onClick={() => { setEditingUser(user); setEditForm({ ...user }); }}
+          aria-label={`Edit ${user.full_name}`}
+          className="size-9 rounded-full text-ink-500 hover:text-brand-700 hover:bg-brand-50 inline-flex items-center justify-center transition-colors cursor-pointer mr-1"
+        >
+          <Pencil className="size-4" />
+        </button>
+        <button
+          onClick={() => handleDeleteUser(user.id, user.role)}
+          aria-label={`Delete ${user.full_name}`}
+          className="size-9 rounded-full text-ink-500 hover:text-red-700 hover:bg-red-50 inline-flex items-center justify-center transition-colors cursor-pointer"
+        >
+          <Trash2 className="size-4" />
+        </button>
+      </td>
+    </tr>
+  );
 
   return (
-    <div className="min-h-screen bg-[#050507] text-white selection:bg-purple-500/30 font-sans">
-      <Header />
+    <div className="min-h-screen flex flex-col bg-cream-50">
+      <SiteHeader />
 
-      {/* EDIT MODAL (Responsive Grid) */}
-      {editingUser && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/90 backdrop-blur-sm" onClick={() => setEditingUser(null)} />
-          <div className="bg-[#111113] border border-zinc-800 w-full max-w-xl rounded-xl z-10 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="p-5 sm:p-6 border-b border-zinc-800 flex justify-between items-center bg-[#0a0a0c]">
-              <h2 className="text-lg sm:text-xl font-black flex items-center gap-2"><Edit className="w-5 h-5 text-purple-500"/> Edit {editingUser.role.toUpperCase()}</h2>
-              <button onClick={() => setEditingUser(null)} className="text-zinc-500 hover:text-white"><X className="w-6 h-6"/></button>
-            </div>
-            
-            <div className="p-5 sm:p-6 overflow-y-auto space-y-4 sm:space-y-5 flex-1">
-              <div><label className="text-xs font-bold text-zinc-400 uppercase">Full Name</label>
-              <input type="text" value={editForm.full_name || ''} onChange={e => setEditForm({...editForm, full_name: e.target.value})} className={inputClass} /></div>
-              
-              <div><label className="text-xs font-bold text-zinc-400 uppercase">Email Address</label>
-              <input type="email" value={editForm.email || ''} onChange={e => setEditForm({...editForm, email: e.target.value})} className={inputClass} /></div>
-
-              {editingUser.role === 'doctor' && (
-                <>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div><label className="text-xs font-bold text-zinc-400 uppercase">Specialty</label>
-                    <input type="text" value={editForm.specialty || ''} onChange={e => setEditForm({...editForm, specialty: e.target.value})} className={inputClass} /></div>
-                    <div><label className="text-xs font-bold text-zinc-400 uppercase">Fee (Rs.)</label>
-                    <input type="number" value={editForm.fee || ''} onChange={e => setEditForm({...editForm, fee: Number(e.target.value)})} className={inputClass} /></div>
-                  </div>
-                  <div><label className="text-xs font-bold text-zinc-400 uppercase">Hospital/Clinic</label>
-                  <input type="text" value={editForm.hospital || ''} onChange={e => setEditForm({...editForm, hospital: e.target.value})} className={inputClass} /></div>
-                  <div><label className="text-xs font-bold text-zinc-400 uppercase">City</label>
-                  <input type="text" value={editForm.city || ''} onChange={e => setEditForm({...editForm, city: e.target.value})} className={inputClass} /></div>
-                </>
-              )}
-
-              {editingUser.role === 'patient' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div><label className="text-xs font-bold text-zinc-400 uppercase">Phone</label>
-                  <input type="text" value={editForm.phone || ''} onChange={e => setEditForm({...editForm, phone: e.target.value})} className={inputClass} /></div>
-                  <div><label className="text-xs font-bold text-zinc-400 uppercase">Blood Group</label>
-                  <input type="text" value={editForm.blood_group || ''} onChange={e => setEditForm({...editForm, blood_group: e.target.value})} className={inputClass} /></div>
+      {/* Edit user modal */}
+      <Modal open={!!editingUser} onClose={() => setEditingUser(null)}>
+        <div className="p-8">
+          <h3 className="font-display text-2xl font-semibold text-ink-900 flex items-center gap-2">
+            <Pencil className="size-5 text-brand-600" /> Edit {editingUser?.role}
+          </h3>
+          <div className="mt-6 space-y-4">
+            <div><Label>Full name</Label><Input value={editForm.full_name || ''} onChange={e => setEditForm({ ...editForm, full_name: e.target.value })} /></div>
+            <div><Label>Email</Label><Input type="email" value={editForm.email || ''} onChange={e => setEditForm({ ...editForm, email: e.target.value })} /></div>
+            {editingUser?.role === 'doctor' && (
+              <>
+                <div className="grid grid-cols-2 gap-4">
+                  <div><Label>Specialty</Label><Input value={editForm.specialty || ''} onChange={e => setEditForm({ ...editForm, specialty: e.target.value })} /></div>
+                  <div><Label>Fee (Rs.)</Label><Input type="number" value={editForm.fee || ''} onChange={e => setEditForm({ ...editForm, fee: Number(e.target.value) })} /></div>
                 </div>
-              )}
-            </div>
+                <div><Label>Hospital / clinic</Label><Input value={editForm.hospital || ''} onChange={e => setEditForm({ ...editForm, hospital: e.target.value })} /></div>
+                <div><Label>City</Label><Input value={editForm.city || ''} onChange={e => setEditForm({ ...editForm, city: e.target.value })} /></div>
+              </>
+            )}
+            {editingUser?.role === 'patient' && (
+              <div className="grid grid-cols-2 gap-4">
+                <div><Label>Phone</Label><Input value={editForm.phone || ''} onChange={e => setEditForm({ ...editForm, phone: e.target.value })} /></div>
+                <div><Label>Blood group</Label><Input value={editForm.blood_group || ''} onChange={e => setEditForm({ ...editForm, blood_group: e.target.value })} /></div>
+              </div>
+            )}
+          </div>
+          <div className="flex gap-3 mt-6">
+            <Button variant="outline" className="flex-1" onClick={() => setEditingUser(null)}>Cancel</Button>
+            <Button className="flex-1" loading={isSaving} onClick={handleSaveUser}><Save className="size-4" /> Save changes</Button>
+          </div>
+        </div>
+      </Modal>
 
-            <div className="p-5 sm:p-6 border-t border-zinc-800 bg-[#0a0a0c] flex flex-col sm:flex-row justify-end gap-3">
-              <Button onClick={() => setEditingUser(null)} variant="outline" className="border-zinc-700 hover:bg-zinc-800 rounded-lg w-full sm:w-auto">Cancel</Button>
-              <Button onClick={handleSaveUser} disabled={isSaving} className="bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-bold gap-2 w-full sm:w-auto">
-                {isSaving ? 'Saving...' : <><Save className="w-4 h-4"/> Save Changes</>}
+      <main className="flex-1">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-14">
+          <Reveal>
+            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-5 mb-8">
+              <div>
+                <span className="eyebrow">Admin console</span>
+                <h1 className="font-display text-3xl sm:text-4xl font-semibold text-ink-900 tracking-tight mt-2 flex items-center gap-3">
+                  Command center
+                  <Badge tone="pine"><ShieldCheck className="size-3.5" /> Admin</Badge>
+                </h1>
+                <p className="text-ink-500 text-sm mt-1">Full control over users, appointments and demo data.</p>
+              </div>
+              <Button variant="danger" onClick={handleReset} loading={resetting}>
+                <RotateCcw className="size-4" /> Reset demo data
               </Button>
             </div>
+          </Reveal>
+
+          {/* Tabs */}
+          <div className="overflow-x-auto pb-2 mb-8">
+            <div className="flex gap-2 w-max">
+              {TABS.map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-bold transition-all cursor-pointer whitespace-nowrap ${
+                    activeTab === tab.id ? 'bg-pine-900 text-white shadow-soft' : 'bg-white text-ink-600 border border-ink-900/[0.08] hover:border-brand-400'
+                  }`}
+                >
+                  <tab.icon className="size-4" /> {tab.label}
+                  {tab.id === 'messages' && messages.length > 0 && (
+                    <span className="size-5 rounded-full bg-glow-400 text-ink-900 text-[10px] font-extrabold flex items-center justify-center tnum">{messages.length}</span>
+                  )}
+                </button>
+              ))}
+            </div>
           </div>
+
+          {activeTab === 'overview' && (
+            <div className="space-y-8">
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                {stats.map((s, i) => (
+                  <Reveal key={s.label} delay={i * 70}>
+                    <Card className="lift p-6">
+                      <span className={`size-11 rounded-2xl flex items-center justify-center ${s.tone} mb-4`}>
+                        <s.icon className="size-5" />
+                      </span>
+                      <p className="font-display text-2xl sm:text-3xl font-semibold text-ink-900 tnum">{s.value}</p>
+                      <p className="text-sm text-ink-500 font-medium">{s.label}</p>
+                    </Card>
+                  </Reveal>
+                ))}
+              </div>
+              <Reveal>
+                <Card className="p-6 sm:p-8">
+                  <h2 className="font-display text-xl font-semibold text-ink-900 mb-2">Platform health</h2>
+                  <p className="text-sm text-ink-500 mb-5">Local demo mode — all data lives in this browser&apos;s storage.</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {['Session & auth', 'Local database', 'Browser storage'].map(name => (
+                      <div key={name} className="flex items-center justify-between gap-3 px-4 py-3.5 rounded-2xl bg-brand-50 border border-brand-200">
+                        <span className="font-bold text-brand-900 text-sm">{name}</span>
+                        <span className="inline-flex items-center gap-1.5 text-brand-700 text-xs font-extrabold">
+                          <span className="size-2 rounded-full bg-brand-600 animate-pulse" /> Operational
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              </Reveal>
+            </div>
+          )}
+
+          {activeTab === 'doctors' && (
+            <Card className="overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left min-w-[680px]">
+                  <thead><tr className="bg-cream-50 text-ink-500 text-[11px] uppercase tracking-wider">
+                    <th className="p-4 font-bold">Doctor</th><th className="p-4 font-bold">Specialty & clinic</th><th className="p-4 font-bold">Fee</th><th className="p-4 font-bold text-right">Actions</th>
+                  </tr></thead>
+                  <tbody className="divide-y divide-ink-900/[0.06]">
+                    {doctors.length === 0
+                      ? <tr><td colSpan={4}><EmptyState title="No doctors" copy="Doctor accounts will appear here once registered." /></td></tr>
+                      : doctors.map(d => <UserRow key={d.id} user={d} />)}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+
+          {activeTab === 'patients' && (
+            <Card className="overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left min-w-[620px]">
+                  <thead><tr className="bg-cream-50 text-ink-500 text-[11px] uppercase tracking-wider">
+                    <th className="p-4 font-bold">Patient</th><th className="p-4 font-bold">Contact & health</th><th className="p-4 font-bold text-right">Actions</th>
+                  </tr></thead>
+                  <tbody className="divide-y divide-ink-900/[0.06]">
+                    {patients.length === 0
+                      ? <tr><td colSpan={3}><EmptyState title="No patients" copy="Patient accounts will appear here once registered." /></td></tr>
+                      : patients.map(p => <UserRow key={p.id} user={p} />)}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+
+          {activeTab === 'appointments' && (
+            <div className="space-y-4">
+              <Card className="p-4 flex flex-col sm:flex-row gap-3">
+                <div className="relative flex-1">
+                  <Search className="size-4 absolute left-4 top-1/2 -translate-y-1/2 text-ink-400" />
+                  <Input placeholder="Search patient, doctor, date…" value={search} onChange={e => setSearch(e.target.value)} className="pl-11" />
+                </div>
+                <div className="relative">
+                  <select
+                    value={statusFilter}
+                    onChange={e => setStatusFilter(e.target.value)}
+                    className="appearance-none w-full sm:w-48 rounded-2xl border border-ink-900/15 bg-white pl-4 pr-10 py-3 text-[15px] font-medium text-ink-900 cursor-pointer focus:border-brand-500 focus:outline-none"
+                    aria-label="Filter by status"
+                  >
+                    {STATUSES.map(s => <option key={s}>{s}</option>)}
+                  </select>
+                  <ChevronDown className="size-4 absolute right-4 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none" />
+                </div>
+              </Card>
+              <Card className="overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left min-w-[700px]">
+                    <thead><tr className="bg-cream-50 text-ink-500 text-[11px] uppercase tracking-wider">
+                      <th className="p-4 font-bold">Date & time</th><th className="p-4 font-bold">Doctor</th><th className="p-4 font-bold">Patient</th><th className="p-4 font-bold">Status & fee</th><th className="p-4 font-bold text-right">Delete</th>
+                    </tr></thead>
+                    <tbody className="divide-y divide-ink-900/[0.06]">
+                      {filteredAppointments.length === 0 ? (
+                        <tr><td colSpan={5}><EmptyState title="No appointments match" copy="Try a different search or status filter." /></td></tr>
+                      ) : (
+                        filteredAppointments.map(a => (
+                          <tr key={a.id} className="hover:bg-cream-50/60 transition-colors">
+                            <td className="p-4">
+                              <p className="font-bold text-ink-900 text-sm">{new Date(a.appointment_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
+                              <p className="text-xs text-ink-500">{a.appointment_time}</p>
+                            </td>
+                            <td className="p-4 text-sm font-bold text-ink-900">{a.doctor?.full_name || '—'}</td>
+                            <td className="p-4 text-sm text-ink-900">{a.patient?.full_name || a.patient_name || '—'}</td>
+                            <td className="p-4">
+                              <StatusPill status={a.status} />
+                              <p className="text-xs text-ink-500 font-bold mt-1.5 tnum">Rs. {(a.fee || 0).toLocaleString()}</p>
+                            </td>
+                            <td className="p-4 text-right">
+                              <button
+                                onClick={() => handleDeleteAppointment(a.id)}
+                                aria-label="Delete appointment"
+                                className="size-9 rounded-full text-ink-500 hover:text-red-700 hover:bg-red-50 inline-flex items-center justify-center transition-colors cursor-pointer"
+                              >
+                                <Trash2 className="size-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {activeTab === 'messages' && (
+            <div className="space-y-4">
+              {messages.length === 0 ? (
+                <Card><EmptyState title="Inbox is empty" copy="Messages from the contact page will land here." /></Card>
+              ) : (
+                messages.map(m => (
+                  <Card key={m.id} className="p-6">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div className="flex items-center gap-3">
+                        <Avatar name={m.name} size="sm" />
+                        <div>
+                          <p className="font-bold text-ink-900 text-sm">{m.name}</p>
+                          <p className="text-xs text-ink-500">{m.email}{m.phone ? ` · ${m.phone}` : ''}</p>
+                        </div>
+                      </div>
+                      <p className="text-xs text-ink-400 font-medium">{m.created_at ? new Date(m.created_at).toLocaleDateString() : ''}</p>
+                    </div>
+                    {m.subject && <p className="font-bold text-ink-900 text-sm mt-4">Subject: {m.subject}</p>}
+                    <p className="text-sm text-ink-600 mt-1.5 leading-relaxed">{m.message}</p>
+                  </Card>
+                ))
+              )}
+            </div>
+          )}
         </div>
-      )}
-
-      <main className="max-w-7xl mx-auto px-4 py-8 sm:py-10">
-        
-        {/* Header */}
-        <div className="mb-8 sm:mb-10 text-center sm:text-left">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-500/10 text-purple-500 border border-purple-500/20 text-[10px] sm:text-xs font-black tracking-widest uppercase mb-4">
-            <ShieldAlert className="w-3 h-3" /> Level 5 Access
-          </div>
-          <h1 className="text-3xl sm:text-4xl md:text-5xl font-black tracking-tight text-white mb-2">Nexus <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">Command Center</span></h1>
-          <p className="text-zinc-400 font-medium text-sm sm:text-lg">Absolute control over users, appointments, and global settings.</p>
-        </div>
-
-        {/* Tab Navigation (Scrollable horizontally on very small screens) */}
-        <div className="overflow-x-auto pb-4 mb-4 sm:mb-8 no-scrollbar">
-          <div className="flex flex-nowrap gap-2 bg-[#111113] p-1.5 rounded-xl border border-zinc-800 w-max sm:w-fit">
-            {[
-              { id: 'overview', label: 'Overview', icon: Activity },
-              { id: 'doctors', label: 'Doctors', icon: Stethoscope },
-              { id: 'patients', label: 'Patients', icon: Users },
-              { id: 'timeline', label: 'Timeline', icon: Clock }
-            ].map(tab => (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={`flex items-center gap-2 px-4 py-2 sm:px-5 sm:py-2.5 rounded-lg text-xs sm:text-sm font-bold transition-all whitespace-nowrap ${activeTab === tab.id ? 'bg-zinc-800 text-white shadow-md' : 'text-zinc-400 hover:text-white hover:bg-white/5'}`}>
-                <tab.icon className="w-4 h-4" /> {tab.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* --- TAB CONTENT --- */}
-        
-        {/* 1. OVERVIEW TAB */}
-        {activeTab === 'overview' && (
-          <div className="space-y-6 sm:space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            {/* Stats Row */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-              <div className="bg-[#111113] border border-zinc-800 p-5 sm:p-6 rounded-xl relative overflow-hidden">
-                <div className="absolute top-0 right-0 p-4"><Users className="w-6 h-6 sm:w-8 sm:h-8 text-blue-500/20"/></div>
-                <p className="text-zinc-400 font-bold text-xs sm:text-sm mb-1">Total Patients</p>
-                <p className="text-3xl sm:text-4xl font-black">{patients.length}</p>
-              </div>
-              <div className="bg-[#111113] border border-zinc-800 p-5 sm:p-6 rounded-xl relative overflow-hidden">
-                <div className="absolute top-0 right-0 p-4"><Stethoscope className="w-6 h-6 sm:w-8 sm:h-8 text-emerald-500/20"/></div>
-                <p className="text-zinc-400 font-bold text-xs sm:text-sm mb-1">Verified Doctors</p>
-                <p className="text-3xl sm:text-4xl font-black">{doctors.length}</p>
-              </div>
-              <div className="bg-[#111113] border border-zinc-800 p-5 sm:p-6 rounded-xl relative overflow-hidden">
-                <div className="absolute top-0 right-0 p-4"><Calendar className="w-6 h-6 sm:w-8 sm:h-8 text-purple-500/20"/></div>
-                <p className="text-zinc-400 font-bold text-xs sm:text-sm mb-1">Total Appointments</p>
-                <p className="text-3xl sm:text-4xl font-black">{appointments.length}</p>
-              </div>
-              <div className="bg-[#111113] border border-amber-500/30 p-5 sm:p-6 rounded-xl relative overflow-hidden shadow-[0_0_30px_rgba(245,158,11,0.05)]">
-                <div className="absolute top-4 right-4 text-[10px] sm:text-xs font-black bg-amber-500/20 text-amber-500 px-2 py-1 rounded-md">10% Cut</div>
-                <p className="text-zinc-400 font-bold text-xs sm:text-sm mb-1">Platform Revenue</p>
-                <p className="text-2xl sm:text-4xl font-black text-amber-400">Rs. {platformCut.toLocaleString()}</p>
-              </div>
-            </div>
-
-            {/* REAL System Status */}
-            <div className="bg-[#111113] border border-zinc-800 rounded-xl p-5 sm:p-6">
-              <h2 className="text-lg sm:text-xl font-black flex items-center gap-2 mb-4 sm:mb-6 border-b border-zinc-800 pb-4"><Server className="w-5 h-5 text-blue-400"/> Live System Status</h2>
-              <div className="space-y-3 sm:space-y-4">
-                <StatusIndicator name="Database Connection" status={dbStatus} />
-                <StatusIndicator name="Storage Bucket (medical_records)" status={storageStatus} />
-                <StatusIndicator name="Authentication Services" status={authStatus} />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* 2. DOCTORS TAB (Responsive Table) */}
-        {activeTab === 'doctors' && (
-          <div className="bg-[#111113] border border-zinc-800 rounded-xl overflow-hidden animate-in fade-in">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse min-w-[700px]">
-                <thead><tr className="bg-[#0a0a0c] text-zinc-400 text-[10px] sm:text-xs uppercase tracking-widest border-b border-zinc-800"><th className="p-4 sm:p-5 font-bold">Doctor Details</th><th className="p-4 sm:p-5 font-bold">Specialty & Clinic</th><th className="p-4 sm:p-5 font-bold">Fee</th><th className="p-4 sm:p-5 font-bold text-right">Admin Actions</th></tr></thead>
-                <tbody className="divide-y divide-zinc-800/50">
-                  {doctors.map(doc => (
-                    <tr key={doc.id} className="hover:bg-white/[0.02] transition-colors">
-                      <td className="p-4 sm:p-5"><p className="font-black text-white text-base sm:text-lg">{doc.full_name}</p><p className="text-[10px] sm:text-xs text-zinc-500 font-mono mt-1">{doc.email}</p></td>
-                      <td className="p-4 sm:p-5"><p className="font-bold text-blue-400 text-sm sm:text-base">{doc.specialty || 'Unassigned'}</p><p className="text-xs sm:text-sm text-zinc-400">{doc.hospital || 'No Clinic'} • {doc.city || 'No City'}</p></td>
-                      <td className="p-4 sm:p-5 font-black text-emerald-400 text-sm sm:text-base">Rs. {doc.fee || 0}</td>
-                      <td className="p-4 sm:p-5 text-right">
-                        <button onClick={() => handleEditClick(doc)} className="p-1.5 sm:p-2 text-zinc-400 hover:text-blue-400 hover:bg-blue-400/10 rounded-lg transition-all mr-1 sm:mr-2"><Edit className="w-4 h-4 sm:w-5 sm:h-5"/></button>
-                        <button onClick={() => handleDeleteUser(doc.id, 'doctor')} className="p-1.5 sm:p-2 text-zinc-400 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all"><Trash2 className="w-4 h-4 sm:w-5 sm:h-5"/></button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* 3. PATIENTS TAB (Responsive Table) */}
-        {activeTab === 'patients' && (
-          <div className="bg-[#111113] border border-zinc-800 rounded-xl overflow-hidden animate-in fade-in">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse min-w-[700px]">
-                <thead><tr className="bg-[#0a0a0c] text-zinc-400 text-[10px] sm:text-xs uppercase tracking-widest border-b border-zinc-800"><th className="p-4 sm:p-5 font-bold">Patient Details</th><th className="p-4 sm:p-5 font-bold">Contact Info</th><th className="p-4 sm:p-5 font-bold">Blood Group</th><th className="p-4 sm:p-5 font-bold text-right">Admin Actions</th></tr></thead>
-                <tbody className="divide-y divide-zinc-800/50">
-                  {patients.map(pat => (
-                    <tr key={pat.id} className="hover:bg-white/[0.02] transition-colors">
-                      <td className="p-4 sm:p-5"><p className="font-black text-white text-base sm:text-lg">{pat.full_name}</p><p className="text-[10px] sm:text-xs text-zinc-500 font-mono mt-1">{pat.email}</p></td>
-                      <td className="p-4 sm:p-5 font-medium text-zinc-300 text-sm sm:text-base">{pat.phone || 'No phone provided'}</td>
-                      <td className="p-4 sm:p-5"><span className="bg-red-500/10 text-red-500 font-bold px-2 py-1 sm:px-3 sm:py-1 rounded-md text-xs sm:text-sm border border-red-500/20">{pat.blood_group || 'Unknown'}</span></td>
-                      <td className="p-4 sm:p-5 text-right">
-                        <button onClick={() => handleEditClick(pat)} className="p-1.5 sm:p-2 text-zinc-400 hover:text-blue-400 hover:bg-blue-400/10 rounded-lg transition-all mr-1 sm:mr-2"><Edit className="w-4 h-4 sm:w-5 sm:h-5"/></button>
-                        <button onClick={() => handleDeleteUser(pat.id, 'patient')} className="p-1.5 sm:p-2 text-zinc-400 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all"><Trash2 className="w-4 h-4 sm:w-5 sm:h-5"/></button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* 4. GLOBAL TIMELINE TAB (Responsive Table) */}
-        {activeTab === 'timeline' && (
-          <div className="bg-[#111113] border border-zinc-800 rounded-xl overflow-hidden animate-in fade-in">
-            <div className="p-4 sm:p-5 bg-purple-500/10 border-b border-purple-500/20 flex items-start sm:items-center gap-3">
-              <Clock className="w-5 h-5 text-purple-400 shrink-0 mt-0.5 sm:mt-0" />
-              <p className="font-bold text-purple-400 text-xs sm:text-sm">Master chronological view of all system bookings.</p>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse min-w-[700px]">
-                <thead><tr className="bg-[#0a0a0c] text-zinc-400 text-[10px] sm:text-xs uppercase tracking-widest border-b border-zinc-800"><th className="p-4 sm:p-5 font-bold">Date & Time</th><th className="p-4 sm:p-5 font-bold">Participants</th><th className="p-4 sm:p-5 font-bold">Status & Fee</th><th className="p-4 sm:p-5 font-bold text-right">Delete</th></tr></thead>
-                <tbody className="divide-y divide-zinc-800/50">
-                  {appointments.map(appt => (
-                    <tr key={appt.id} className="hover:bg-white/[0.02] transition-colors">
-                      <td className="p-4 sm:p-5">
-                        <p className="font-black text-white text-sm sm:text-base">{new Date(appt.appointment_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</p>
-                        <p className="text-xs sm:text-sm text-zinc-400 font-bold">{appt.appointment_time}</p>
-                      </td>
-                      <td className="p-4 sm:p-5">
-                        <p className="font-bold text-blue-400 text-xs sm:text-sm mb-1">Doc: {appt.doctor?.full_name || 'Unknown'}</p>
-                        <p className="font-bold text-zinc-300 text-xs sm:text-sm">Pat: {appt.patient?.full_name || appt.patient_name || 'Unknown'}</p>
-                      </td>
-                      <td className="p-4 sm:p-5">
-                        <span className={`inline-flex px-2 py-0.5 sm:py-1 rounded-md text-[10px] sm:text-xs font-black border ${appt.status === 'Completed' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : appt.status === 'cancelled' ? 'bg-red-500/10 text-red-500 border-red-500/20' : 'bg-amber-500/10 text-amber-500 border-amber-500/20'}`}>{appt.status}</span>
-                        <p className="text-[10px] sm:text-xs text-zinc-500 font-bold mt-1.5 sm:mt-2">Fee: Rs. {appt.fee}</p>
-                      </td>
-                      <td className="p-4 sm:p-5 text-right">
-                        <button onClick={() => handleDeleteAppointment(appt.id)} className="p-1.5 sm:p-2 text-zinc-400 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all"><Trash2 className="w-4 h-4 sm:w-5 sm:h-5"/></button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
       </main>
+
+      <SiteFooter />
     </div>
   );
 }
