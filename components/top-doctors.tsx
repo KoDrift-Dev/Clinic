@@ -1,31 +1,25 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { listDoctors, type Profile } from '@/lib/db';
 import { Button } from '@/components/ui/button';
 import { Star, MapPin, Clock } from 'lucide-react';
 import Link from 'next/link';
 
 export function TopDoctors() {
-  const supabase = createClient();
-  const [doctors, setDoctors] = useState<any[]>([]);
+  const [doctors, setDoctors] = useState<Profile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     const fetchTopDoctors = async () => {
       setIsLoading(true);
-      // Fetch up to 3 real doctors to feature on the home page
-      const { data } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('role', 'doctor')
-        .limit(3);
-        
-      if (data) setDoctors(data);
+      // Fetch up to 3 doctors to feature on the home page
+      const data = await listDoctors();
+      setDoctors(data.slice(0, 3));
       setIsLoading(false);
     };
     fetchTopDoctors();
-  }, [supabase]);
+  }, []);
 
   return (
     <section className="py-20 relative overflow-hidden">

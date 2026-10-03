@@ -4,7 +4,7 @@ import { Heart, Menu, X, User, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { createClient } from '@/lib/supabase/client';
+import { getSession, logout } from '@/lib/auth';
 import { useRouter, usePathname } from 'next/navigation';
 
 export function Header() {
@@ -12,32 +12,23 @@ export function Header() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
   
-  const supabase = createClient();
   const router = useRouter();
   const pathname = usePathname();
 
   useEffect(() => {
     document.documentElement.classList.add('dark');
 
-    const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      setIsLoggedIn(!!session);
-      
-      if (session?.user) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('role')
-          .eq('id', session.user.id)
-          .single();
-        setUserRole(profile?.role || null);
-      }
+    const checkAuth = () => {
+      const s = getSession();
+      setIsLoggedIn(!!s);
+      setUserRole(s?.role || null);
     };
     checkAuth();
-  }, [supabase]);
+  }, [pathname]);
 
-  const handleLogout = async () => {
-    // 1. Wipe the Supabase session
-    await supabase.auth.signOut();
+  const handleLogout = () => {
+    // 1. Wipe the local demo session
+    logout();
     setIsLoggedIn(false);
     setUserRole(null);
     

@@ -1,40 +1,28 @@
-import { redirect } from 'next/navigation';
-import { createServerClient } from '@supabase/ssr';
-import { cookies } from 'next/headers';
+'use client';
 
-export default async function DashboardRouter() {
-  const cookieStore = await cookies();
-  
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        get(name: string) { return cookieStore.get(name)?.value; },
-      },
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { getSession, dashboardPath } from '@/lib/auth';
+
+// Routes the logged-in user to the right dashboard based on their role.
+export default function DashboardRouter() {
+  const router = useRouter();
+
+  useEffect(() => {
+    const session = getSession();
+    if (!session) {
+      router.replace('/login');
+    } else {
+      router.replace(dashboardPath(session.role));
     }
+  }, [router]);
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background">
+      <div className="text-center">
+        <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+        <p className="font-bold text-foreground-muted">Loading your dashboard...</p>
+      </div>
+    </div>
   );
-
-  const { data: { user } } = await supabase.auth.getUser();
-
-  if (!user) {
-    redirect('/login');
-  }
-
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', user.id)
-    .single();
-
-  // If role is missing/null, default them to 'patient'
-  const userRole = profile?.role || 'patient';
-
-  if (userRole === 'admin') {
-    redirect('/dashboard/admin');
-  } else if (userRole === 'doctor') {
-    redirect('/dashboard/doctor');
-  } else {
-    redirect('/dashboard/patient'); 
-  }
 }
