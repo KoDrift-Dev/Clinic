@@ -13,6 +13,7 @@ import { Button, SectionHeading, Reveal, FaqItem, Badge, Avatar, Card } from '@/
 import { DoctorCard } from '@/components/doctor-card';
 import { specialtyMeta } from '@/components/specialties';
 import { listDoctors, listAppointments, doctorSpecialties, type Profile, type SpecialtyInfo } from '@/lib/db';
+import { HERO_PHOTO } from '@/lib/hero-photo';
 
 const STEPS = [
   {
@@ -160,7 +161,7 @@ export default function HomePage() {
       {/* ------------------------------- HERO ------------------------------- */}
       <section className="relative overflow-hidden">
         <img
-          src="https://images.pexels.com/photos/4173251/pexels-photo-4173251.jpeg?auto=compress&cs=tinysrgb&w=1600"
+          src={HERO_PHOTO}
           alt=""
           aria-hidden
           className="absolute inset-0 size-full object-cover object-[72%_center]"
