@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
+import { getProfile, createAppointment, type Profile } from '@/lib/db';
+import { getSession } from '@/lib/auth';
 import { Header } from '@/components/header';
 import { Footer } from '@/components/footer';
 import { Button } from '@/components/ui/button';
@@ -18,13 +19,12 @@ const STANDARD_SLOTS = ['10:00 AM', '10:30 AM', '11:00 AM', '11:30 AM', '04:00 P
 export default function BookingPage() {
   const params = useParams();
   const router = useRouter();
-  const supabase = createClient();
   
   const doctorId = Array.isArray(params.id) ? params.id[0] : params.id;
   
   // Live Database States
-  const [doctor, setDoctor] = useState<any>(null);
-  const [patient, setPatient] = useState<any>(null);
+  const [doctor, setDoctor] = useState<Profile | null>(null);
+  const [patient, setPatient] = useState<Profile | null>(null);
   const [isLoadingDB, setIsLoadingDB] = useState(true);
 
   // Booking States
@@ -48,13 +48,13 @@ export default function BookingPage() {
       setIsLoadingDB(true);
       
       // 1. Fetch Doctor Details
-      const { data: docData } = await supabase.from('profiles').select('*').eq('id', doctorId).single();
-      if (docData) setDoctor(docData);
+      const docData = await getProfile(doctorId as string);
+      if (docData && docData.role === 'doctor') setDoctor(docData);
 
       // 2. Fetch Current Logged-in Patient
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const { data: patData } = await supabase.from('profiles').select('*').eq('id', user.id).single();
+      const session = getSession();
+      if (session) {
+        const patData = await getProfile(session.profileId);
         if (patData) setPatient(patData);
       }
 
@@ -62,7 +62,7 @@ export default function BookingPage() {
     };
     
     if (doctorId) fetchBookingData();
-  }, [doctorId, supabase]);
+  }, [doctorId]);
 
   const daysInMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0).getDate();
   const firstDayOfMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1).getDay();
@@ -74,7 +74,7 @@ export default function BookingPage() {
     const newDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
     setSelectedDate(newDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }));
     
-    // Format YYYY-MM-DD safely for Supabase DATE column
+    // Format YYYY-MM-DD safely for the database DATE column
     const offset = newDate.getTimezoneOffset();
     const localDate = new Date(newDate.getTime() - (offset * 60 * 1000));
     setSelectedDateDBFormat(localDate.toISOString().split('T')[0]);
@@ -98,7 +98,7 @@ export default function BookingPage() {
     }
   };
 
-  // --- REAL SUPABASE INSERTION ---
+  // --- REAL LOCAL INSERTION ---
   const processFinalBooking = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setIsProcessingPayment(true);
@@ -106,25 +106,26 @@ export default function BookingPage() {
     const feeToCharge = doctor?.fee || 1000;
     const diseaseOrReason = patient?.current_symptoms || 'General Checkup';
 
-    const { error } = await supabase.from('appointments').insert([{
-      doctor_id: doctor.id,
-      patient_id: patient.id,
-      patient_name: patient.full_name || 'Patient',
-      disease: diseaseOrReason,
-      appointment_date: selectedDateDBFormat,
-      appointment_time: selectedTime,
-      type: 'Consultation',
-      payment_method: paymentMethod === 'online' ? 'Online' : 'Cash',
-      fee: feeToCharge,
-      status: 'Pending'
-    }]);
-
-    setIsProcessingPayment(false);
-
-    if (error) {
-      alert("Failed to book appointment. Error: " + error.message);
+    try {
+      await createAppointment({
+        doctor_id: doctor!.id,
+        patient_id: patient!.id,
+        patient_name: patient!.full_name || 'Patient',
+        disease: diseaseOrReason,
+        appointment_date: selectedDateDBFormat,
+        appointment_time: selectedTime,
+        type: 'Consultation',
+        payment_method: paymentMethod === 'online' ? 'Online' : 'Cash',
+        fee: feeToCharge,
+        status: 'Pending'
+      });
+    } catch {
+      setIsProcessingPayment(false);
+      alert("Failed to book appointment. Please try again.");
       return;
     }
+
+    setIsProcessingPayment(false);
 
     setShowPaymentModal(false);
     setIsSuccess(true);
@@ -181,7 +182,7 @@ export default function BookingPage() {
             <form onSubmit={processFinalBooking} className="space-y-5 relative">
               <div className="bg-[#111113] border border-zinc-800 p-4 rounded-2xl flex justify-between items-center mb-6 shadow-inner">
                 <span className="font-bold text-foreground-muted">Total to pay</span>
-                <span className="text-2xl font-black text-primary">Rs. {doctor.fee + 100}</span>
+                <span className="text-2xl font-black text-primary">Rs. {(doctor.fee || 1000) + 100}</span>
               </div>
 
               <div>
@@ -207,7 +208,7 @@ export default function BookingPage() {
               </div>
 
               <Button type="submit" disabled={isProcessingPayment} className="w-full bg-gradient-to-r from-blue-500 to-blue-700 text-white rounded-full font-black py-6 mt-4 hover-wave shadow-[0_0_20px_rgba(59,130,246,0.4)] border-0 text-lg">
-                {isProcessingPayment ? 'Processing Payment...' : `Pay Rs. ${doctor.fee + 100}`}
+                {isProcessingPayment ? 'Processing Payment...' : `Pay Rs. ${(doctor.fee || 1000) + 100}`}
               </Button>
               <p className="text-center text-xs text-foreground-muted font-medium mt-4 flex items-center justify-center gap-1">
                 <Lock className="w-3 h-3" /> Payments are 256-bit encrypted.

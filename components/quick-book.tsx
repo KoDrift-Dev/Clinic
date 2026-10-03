@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { listDoctors, type Profile } from '@/lib/db';
 import { Button } from '@/components/ui/button';
 import { Clock, Calendar, ArrowRight, User, X } from 'lucide-react';
 import Link from 'next/link';
@@ -10,29 +10,23 @@ import Link from 'next/link';
 const STANDARD_SLOTS = ['10:00 AM', '11:30 AM', '04:00 PM', '05:30 PM'];
 
 export function QuickBook() {
-  const supabase = createClient();
-  const [doctors, setDoctors] = useState<any[]>([]);
+  const [doctors, setDoctors] = useState<Profile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   
   const [selectedSpecialty, setSelectedSpecialty] = useState('All Specialties');
-  const [selectedSlot, setSelectedSlot] = useState<{ doctor: any, time: string } | null>(null);
+  const [selectedSlot, setSelectedSlot] = useState<{ doctor: Profile, time: string } | null>(null);
 
-  // --- LIVE DATA FETCHING ---
+  // --- LOCAL DATA FETCHING ---
   useEffect(() => {
     const fetchDoctors = async () => {
       setIsLoading(true);
       // Fetch active doctors (limit to 5 for the quick-book section)
-      const { data } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('role', 'doctor')
-        .limit(5);
-        
-      if (data) setDoctors(data);
+      const data = await listDoctors();
+      setDoctors(data.slice(0, 5));
       setIsLoading(false);
     };
     fetchDoctors();
-  }, [supabase]);
+  }, []);
 
   // Dynamically extract unique specialties from the live database
   const specialties = ['All Specialties', ...Array.from(new Set(doctors.map(d => d.specialty).filter(Boolean)))];

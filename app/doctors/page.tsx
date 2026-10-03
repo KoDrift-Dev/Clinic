@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
+import { listDoctors, type Profile } from '@/lib/db';
+import { getSession } from '@/lib/auth';
 import { Header } from '@/components/header';
 import { Footer } from '@/components/footer';
 import { Button } from '@/components/ui/button';
@@ -11,9 +12,8 @@ import Link from 'next/link';
 
 export default function DoctorsDirectory() {
   const router = useRouter();
-  const supabase = createClient();
   
-  const [doctors, setDoctors] = useState<any[]>([]);
+  const [doctors, setDoctors] = useState<Profile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [checkingAuth, setCheckingAuth] = useState(false);
 
@@ -28,16 +28,12 @@ export default function DoctorsDirectory() {
     const fetchDoctors = async () => {
       setIsLoading(true);
       // Fetch only users who have the role of 'doctor'
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('role', 'doctor');
-        
-      if (data) setDoctors(data);
+      const data = await listDoctors();
+      setDoctors(data);
       setIsLoading(false);
     };
     fetchDoctors();
-  }, [supabase]);
+  }, []);
 
   // --- EXTRACT UNIQUE OPTIONS FOR DROPDOWNS ---
   const specialties = ['All Specialties', ...Array.from(new Set(doctors.map(d => d.specialty).filter(Boolean)))];
@@ -59,7 +55,7 @@ export default function DoctorsDirectory() {
   // --- BOOKING HANDLER ---
   const handleBookingAttempt = async (doctorId: string) => {
     setCheckingAuth(true);
-    const { data: { session } } = await supabase.auth.getSession();
+    const session = getSession();
     setCheckingAuth(false);
 
     if (!session) {

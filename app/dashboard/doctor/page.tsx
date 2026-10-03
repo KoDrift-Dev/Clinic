@@ -5,27 +5,12 @@ import { useRouter } from 'next/navigation';
 import { Header } from '@/components/header';
 import { Footer } from '@/components/footer';
 import { Button } from '@/components/ui/button';
-import { createClient } from '@/lib/supabase/client';
+import { getSessionProfile } from '@/lib/auth';
+import { getProfile, appointmentsForDoctor, updateAppointment, recordsForPatient, createRecord, type Appointment, type Profile, type MedicalRecord } from '@/lib/db';
 import { Users, CheckCircle2, Clock, CalendarX, Activity, Trash2, X, ArrowLeft, FileText, Download, Upload, Plus, User as UserIcon, Droplet, Scale, Ruler, Stethoscope } from 'lucide-react';
 import Link from 'next/link';
 
-// Database Shapes
-type Appointment = {
-  id: string;
-  patient_id: string; 
-  patient_name: string;
-  disease: string;
-  appointment_date: string;
-  appointment_time: string;
-  type: string;
-  payment_method: string;
-  fee: number;
-  status: string;
-  patient?: any; // To hold joined relational data if needed
-};
-
 export default function DoctorDashboard() {
-  const supabase = createClient();
   const router = useRouter();
   
   const [appointments, setAppointments] = useState<Appointment[]>([]);
@@ -34,22 +19,20 @@ export default function DoctorDashboard() {
   const [isAuthorized, setIsAuthorized] = useState(false);
   
   // Real Doctor Info
-  const [doctorProfile, setDoctorProfile] = useState<any>(null);
+  const [doctorProfile, setDoctorProfile] = useState<Profile | null>(null);
 
   // Patient File Modal State
   const [viewingPatient, setViewingPatient] = useState<Appointment | null>(null);
-  const [patientProfile, setPatientProfile] = useState<any>(null);
-  const [patientRecords, setPatientRecords] = useState<any[]>([]);
+  const [patientProfile, setPatientProfile] = useState<Profile | null>(null);
+  const [patientRecords, setPatientRecords] = useState<MedicalRecord[]>([]);
   const [isUploadingPrescription, setIsUploadingPrescription] = useState(false);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
 
   // --- ROLE GUARD & DOCTOR FETCH ---
   useEffect(() => {
     const checkRole = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return router.push('/login');
-      
-      const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single();
+      const profile = await getSessionProfile();
+      if (!profile) return router.push('/login');
       
       // STRICT GUARD: If not a doctor AND not an admin, kick out. 
       if (profile?.role !== 'doctor' && profile?.role !== 'admin') {
@@ -61,31 +44,21 @@ export default function DoctorDashboard() {
       setIsAuthorized(true);
     };
     checkRole();
-  }, [router, supabase]);
+  }, [router]);
 
   // 1. Fetch live appointments for this doctor
   const fetchAppointments = async () => {
     if (!doctorProfile) return;
     setIsLoading(true);
     
-    // Join with profiles table to ensure we always have the real patient name
-    const { data } = await supabase
-      .from('appointments')
-      .select(`
-        *,
-        patient:profiles!patient_id(full_name, email, phone)
-      `)
-      .eq('doctor_id', doctorProfile.id)
-      .order('appointment_date', { ascending: false });
+    const data = await appointmentsForDoctor(doctorProfile.id);
       
-    if (data) {
-      // Map it securely so your UI doesn't break
-      const mappedAppts = data.map(appt => ({
-        ...appt,
-        patient_name: appt.patient_name || appt.patient?.full_name || 'Unknown Patient'
-      }));
-      setAppointments(mappedAppts);
-    }
+    // Map it securely so your UI doesn't break
+    const mappedAppts = data.map(appt => ({
+      ...appt,
+      patient_name: appt.patient_name || appt.patient?.full_name || 'Unknown Patient'
+    }));
+    setAppointments(mappedAppts);
     setIsLoading(false);
   };
 
@@ -98,7 +71,7 @@ export default function DoctorDashboard() {
   // 2. Database Actions
   const updateStatus = async (id: string, newStatus: string) => {
     setAppointments(current => current.map(appt => appt.id === id ? { ...appt, status: newStatus } : appt));
-    await supabase.from('appointments').update({ status: newStatus }).eq('id', id);
+    await updateAppointment(id, { status: newStatus });
   };
 
   // 3. Open Patient File (LIVE FETCH)
@@ -109,12 +82,12 @@ export default function DoctorDashboard() {
     setPatientRecords([]);
 
     // Fetch REAL patient profile
-    const { data: profile } = await supabase.from('profiles').select('*').eq('id', appt.patient_id).single();
+    const profile = await getProfile(appt.patient_id);
     if (profile) setPatientProfile(profile);
 
     // Fetch REAL patient records
-    const { data: records } = await supabase.from('medical_records').select('*').eq('patient_id', appt.patient_id).order('created_at', { ascending: false });
-    if (records) setPatientRecords(records);
+    const records = await recordsForPatient(appt.patient_id);
+    setPatientRecords(records);
 
     setIsLoadingFile(false);
   };
@@ -128,24 +101,23 @@ export default function DoctorDashboard() {
     // Simulate file generation delay
     await new Promise(resolve => setTimeout(resolve, 1500)); 
     
+    // Generate a real downloadable prescription document (works fully offline)
+    const rxText = `DIGITAL PRESCRIPTION\n${doctorProfile.full_name} — ${doctorProfile.specialty || 'Doctor'}\n${doctorProfile.hospital || ''}, ${doctorProfile.city || ''}\n\nPatient: ${viewingPatient.patient_name}\nDate: ${new Date().toLocaleDateString()}\n\nDiagnosis: ${viewingPatient.disease || 'General consultation'}\n\nRx:\n1. Take prescribed medication as directed.\n2. Follow up if symptoms persist.\n\n— ${doctorProfile.full_name}`;
+
     const newRecord = {
       patient_id: viewingPatient.patient_id,
       doctor_name: doctorProfile.full_name,
       title: 'Digital Prescription',
       report_type: 'Prescription',
       uploaded_by: 'Doctor',
-      file_url: `Rx_${viewingPatient.patient_name.replace(/\s+/g, '_')}_${new Date().getTime()}.pdf`,
+      file_url: 'data:text/plain;charset=utf-8,' + encodeURIComponent(rxText),
       created_at: new Date().toISOString()
     };
     
-    // Insert into Supabase
-    const { data, error } = await supabase.from('medical_records').insert([newRecord]).select().single();
+    // Save to local database
+    const data = await createRecord(newRecord);
     
-    if (data) {
-      setPatientRecords([data, ...patientRecords]);
-    } else if (error) {
-      alert("Failed to save prescription: " + error.message);
-    }
+    setPatientRecords([data, ...patientRecords]);
     
     setIsUploadingPrescription(false);
   };
@@ -274,7 +246,7 @@ export default function DoctorDashboard() {
                               <div className="truncate pr-2">
                                 <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-wider px-1.5 sm:px-2 py-0.5 rounded-full ${record.report_type === 'Prescription' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400'}`}>{record.report_type}</span>
                                 <p className="text-xs sm:text-sm font-bold text-foreground mt-1 truncate">{record.title || record.file_url}</p>
-                                <p className="text-[8px] sm:text-[10px] text-foreground-muted font-medium truncate">{record.doctor_name} • {new Date(record.created_at).toLocaleDateString()}</p>
+                                <p className="text-[8px] sm:text-[10px] text-foreground-muted font-medium truncate">{record.doctor_name} • {new Date(record.created_at || Date.now()).toLocaleDateString()}</p>
                               </div>
                               <a href={record.file_url} target="_blank" rel="noopener noreferrer" className="p-1.5 sm:p-2 bg-zinc-800 hover:bg-primary text-white rounded-lg sm:rounded-xl transition-colors shrink-0"><Download className="w-3 h-3 sm:w-4 sm:h-4"/></a>
                             </div>

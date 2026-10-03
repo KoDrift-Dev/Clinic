@@ -5,28 +5,26 @@ import { useRouter } from 'next/navigation';
 import { Header } from '@/components/header';
 import { Footer } from '@/components/footer';
 import { Button } from '@/components/ui/button';
-import { createClient } from '@/lib/supabase/client';
+import { getSessionProfile, type Session } from '@/lib/auth';
+import { appointmentsForPatient, updateAppointment, type Profile, type Appointment } from '@/lib/db';
 import { Calendar, Clock, User, X, Edit2, AlertCircle, CheckCircle2, ArrowLeft, History } from 'lucide-react';
 import Link from 'next/link';
 
 export default function PatientDashboard() {
-  const supabase = createClient();
   const router = useRouter();
   
   const [checkingAuth, setCheckingAuth] = useState(true);
-  const [patient, setPatient] = useState<any>(null);
-  const [appointments, setAppointments] = useState<any[]>([]);
+  const [patient, setPatient] = useState<Profile | null>(null);
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
   
   // --- ROLE GUARD ---
   useEffect(() => {
     const checkRoleAndFetchData = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
+      const profile = await getSessionProfile();
+      if (!profile) {
         router.push('/login');
         return;
       }
-      
-      const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single();
       
       const userRole = profile?.role || 'patient';
       
@@ -38,16 +36,11 @@ export default function PatientDashboard() {
       setPatient(profile);
       setCheckingAuth(false);
 
-      const { data: appts } = await supabase
-        .from('appointments')
-        .select(`*, doctor:profiles!doctor_id(full_name, specialty, bg, initials)`)
-        .eq('patient_id', user.id)
-        .order('appointment_date', { ascending: false });
-
-      if (appts) setAppointments(appts);
+      const appts = await appointmentsForPatient(profile.id);
+      setAppointments(appts);
     };
     checkRoleAndFetchData();
-  }, [router, supabase]);
+  }, [router]);
 
   // Modal States
   const [cancelModal, setCancelModal] = useState<{ isOpen: boolean, apptId: string | null }>({ isOpen: false, apptId: null });
@@ -63,7 +56,7 @@ export default function PatientDashboard() {
       setAppointments(current => 
         current.map(appt => appt.id === cancelModal.apptId ? { ...appt, status: 'Canceled' } : appt)
       );
-      await supabase.from('appointments').update({ status: 'Canceled' }).eq('id', cancelModal.apptId);
+      await updateAppointment(cancelModal.apptId, { status: 'Canceled' });
       setCancelModal({ isOpen: false, apptId: null });
     }
   };
@@ -73,7 +66,7 @@ export default function PatientDashboard() {
       setAppointments(current => 
         current.map(appt => appt.id === rescheduleModal.apptId ? { ...appt, appointment_date: newDate, appointment_time: newTime } : appt)
       );
-      await supabase.from('appointments').update({ appointment_date: newDate, appointment_time: newTime }).eq('id', rescheduleModal.apptId);
+      await updateAppointment(rescheduleModal.apptId, { appointment_date: newDate, appointment_time: newTime });
       
       setRescheduleModal({ isOpen: false, apptId: null });
       setNewDate('');
