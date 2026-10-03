@@ -1,51 +1,39 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
-import { Geist, Geist_Mono } from 'next/font/google'
+import { Fraunces, Plus_Jakarta_Sans } from 'next/font/google'
 import './globals.css'
 
-const geistSans = Geist({ variable: '--font-geist-sans', subsets: ['latin'] })
-const geistMono = Geist_Mono({
-  variable: '--font-geist-mono',
+const display = Fraunces({
+  variable: '--font-display',
   subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  style: ['normal', 'italic'],
+  display: 'swap',
+})
+
+const sans = Plus_Jakarta_Sans({
+  variable: '--font-sans',
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700', '800'],
+  display: 'swap',
 })
 
 export const metadata: Metadata = {
-  title: 'MediBook - Online Doctor Appointment Booking System',
-  description: 'Book doctor appointments online in seconds. Fast, secure, and easy appointment scheduling system for clinics and patients.',
-  generator: 'v0.app',
-  keywords: 'doctor appointment, clinic booking, healthcare, telemedicine, online scheduling',
+  title: 'Crescent Care — Book Trusted Doctors Online in Pakistan',
+  description:
+    'Find verified doctors across Lahore, Karachi and Islamabad. Book appointments in seconds, manage your visits and prescriptions — all in one place.',
+  keywords: 'doctor appointment, clinic booking, healthcare Pakistan, online doctor, Crescent Care',
   openGraph: {
-    title: 'MediBook - Online Doctor Appointment Booking',
-    description: 'Book your doctor appointment online. Fast, secure, and convenient.',
+    title: 'Crescent Care — Book Trusted Doctors Online',
+    description: 'Verified doctors. Instant booking. Your health, handled.',
     type: 'website',
-  },
-  icons: {
-    icon: [
-      {
-        url: '/icon-light-32x32.png',
-        media: '(prefers-color-scheme: light)',
-      },
-      {
-        url: '/icon-dark-32x32.png',
-        media: '(prefers-color-scheme: dark)',
-      },
-      {
-        url: '/icon.svg',
-        type: 'image/svg+xml',
-      },
-    ],
-    apple: '/apple-icon.png',
   },
 }
 
 export const viewport: Viewport = {
-  colorScheme: 'dark', // Updated to enforce dark mode at the browser level
-  themeColor: [
-    { color: '#09090b' }, // Deep zinc/black color for mobile browser top bars
-  ],
+  themeColor: '#0b1f1c',
   width: 'device-width',
   initialScale: 1,
-  userScalable: true,
 }
 
 export default function RootLayout({
@@ -54,9 +42,8 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    // Added the 'dark' class here to permanently lock the theme
-    <html lang="en" className={`dark bg-background ${geistSans.variable} ${geistMono.variable}`}>
-      <body className="font-sans antialiased bg-background selection:bg-blue-500/30 text-foreground">
+    <html lang="en" className={`${display.variable} ${sans.variable}`}>
+      <body className="font-sans antialiased">
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>

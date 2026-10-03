@@ -297,3 +297,53 @@ export async function resetDemoData(): Promise<void> {
   window.localStorage.removeItem(DB_KEY);
   load();
 }
+
+// ---------- specialties (derived) ----------
+export interface SpecialtyInfo { name: string; count: number; cities: string[]; minFee: number; }
+export async function doctorSpecialties(): Promise<SpecialtyInfo[]> {
+  const doctors = await listDoctors();
+  const map = new Map<string, SpecialtyInfo>();
+  for (const d of doctors) {
+    const name = d.specialty || 'General Physician';
+    const cur = map.get(name) ?? { name, count: 0, cities: [], minFee: Number.MAX_SAFE_INTEGER };
+    cur.count += 1;
+    if (d.city && !cur.cities.includes(d.city)) cur.cities.push(d.city);
+    if (typeof d.fee === 'number' && d.fee < cur.minFee) cur.minFee = d.fee;
+    map.set(name, cur);
+  }
+  return [...map.values()]
+    .map(s => ({ ...s, minFee: s.minFee === Number.MAX_SAFE_INTEGER ? 0 : s.minFee }))
+    .sort((a, b) => b.count - a.count);
+}
+
+// ---------- contact messages (local inbox for the demo) ----------
+const CONTACT_KEY = 'medibook_contact_v1';
+export interface ContactMessage {
+  id: string;
+  name: string;
+  email: string;
+  phone?: string;
+  subject?: string;
+  message: string;
+  created_at: string;
+}
+function loadContact(): ContactMessage[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(CONTACT_KEY);
+    if (raw) { const p = JSON.parse(raw); if (Array.isArray(p)) return p as ContactMessage[]; }
+  } catch { /* ignore */ }
+  return [];
+}
+export async function createContactMessage(data: Omit<ContactMessage, 'id' | 'created_at'>): Promise<ContactMessage> {
+  const msg: ContactMessage = { ...data, id: nid('msg'), created_at: new Date().toISOString() };
+  const all = loadContact();
+  all.unshift(msg);
+  if (typeof window !== 'undefined') {
+    try { window.localStorage.setItem(CONTACT_KEY, JSON.stringify(all)); } catch { /* quota */ }
+  }
+  return msg;
+}
+export async function listContactMessages(): Promise<ContactMessage[]> {
+  return loadContact();
+}

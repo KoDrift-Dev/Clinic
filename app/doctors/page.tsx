@@ -1,209 +1,235 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useState, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { Search, SlidersHorizontal, X, MapPin } from 'lucide-react';
+import { SiteHeader } from '@/components/site-header';
+import { SiteFooter } from '@/components/site-footer';
+import { Button, Input, Label, Select, PageHero, Reveal, EmptyState } from '@/components/ui-kit';
+import { DoctorCard } from '@/components/doctor-card';
 import { listDoctors, type Profile } from '@/lib/db';
-import { getSession } from '@/lib/auth';
-import { Header } from '@/components/header';
-import { Footer } from '@/components/footer';
-import { Button } from '@/components/ui/button';
-import { Star, MapPin, Clock, CalendarOff, ArrowLeft, Search, Filter, Building, Stethoscope } from 'lucide-react';
-import Link from 'next/link';
+import { cn } from '@/lib/utils';
 
-export default function DoctorsDirectory() {
-  const router = useRouter();
-  
+type SortKey = 'rating' | 'fee-low' | 'fee-high' | 'exp';
+
+function DoctorsContent() {
+  const searchParams = useSearchParams();
   const [doctors, setDoctors] = useState<Profile[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [checkingAuth, setCheckingAuth] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState('');
+  const [specialty, setSpecialty] = useState(searchParams.get('specialty') ?? '');
+  const [city, setCity] = useState(searchParams.get('city') ?? '');
+  const [maxFee, setMaxFee] = useState<number>(4000);
+  const [minRating, setMinRating] = useState(0);
+  const [sort, setSort] = useState<SortKey>('rating');
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
-  // --- STATE FOR FILTERS ---
-  const [searchTerm, setSearchTerm] = useState('');
-  const [specialty, setSpecialty] = useState('All Specialties');
-  const [city, setCity] = useState('All Cities');
-  const [hospital, setHospital] = useState('All Hospitals');
-
-  // --- FETCH LIVE DATA ---
   useEffect(() => {
-    const fetchDoctors = async () => {
-      setIsLoading(true);
-      // Fetch only users who have the role of 'doctor'
-      const data = await listDoctors();
-      setDoctors(data);
-      setIsLoading(false);
-    };
-    fetchDoctors();
+    (async () => {
+      setDoctors(await listDoctors());
+      setLoading(false);
+    })();
   }, []);
 
-  // --- EXTRACT UNIQUE OPTIONS FOR DROPDOWNS ---
-  const specialties = ['All Specialties', ...Array.from(new Set(doctors.map(d => d.specialty).filter(Boolean)))];
-  const cities = ['All Cities', ...Array.from(new Set(doctors.map(d => d.city).filter(Boolean)))];
-  const hospitals = ['All Hospitals', ...Array.from(new Set(doctors.map(d => d.hospital).filter(Boolean)))];
+  const specialties = useMemo(() => [...new Set(doctors.map(d => d.specialty).filter(Boolean) as string[])].sort(), [doctors]);
+  const cities = useMemo(() => [...new Set(doctors.map(d => d.city).filter(Boolean) as string[])].sort(), [doctors]);
 
-  // --- FILTER LOGIC ---
-  const filteredDoctors = useMemo(() => {
-    return doctors.filter(doctor => {
-      const matchName = (doctor.full_name || '').toLowerCase().includes(searchTerm.toLowerCase());
-      const matchSpecialty = specialty === 'All Specialties' || doctor.specialty === specialty;
-      const matchCity = city === 'All Cities' || doctor.city === city;
-      const matchHospital = hospital === 'All Hospitals' || doctor.hospital === hospital;
-      
-      return matchName && matchSpecialty && matchCity && matchHospital;
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    let out = doctors.filter(d => {
+      if (q && !`${d.full_name} ${d.specialty} ${d.hospital}`.toLowerCase().includes(q)) return false;
+      if (specialty && d.specialty !== specialty) return false;
+      if (city && d.city !== city) return false;
+      if ((d.fee ?? 0) > maxFee) return false;
+      if ((d.rating ?? 0) < minRating) return false;
+      return true;
     });
-  }, [doctors, searchTerm, specialty, city, hospital]);
+    out = [...out].sort((a, b) => {
+      if (sort === 'rating') return (b.rating ?? 0) - (a.rating ?? 0);
+      if (sort === 'fee-low') return (a.fee ?? 0) - (b.fee ?? 0);
+      if (sort === 'fee-high') return (b.fee ?? 0) - (a.fee ?? 0);
+      const exp = (s?: string) => parseInt(s ?? '0', 10) || 0;
+      return exp(b.exp) - exp(a.exp);
+    });
+    return out;
+  }, [doctors, query, specialty, city, maxFee, minRating, sort]);
 
-  // --- BOOKING HANDLER ---
-  const handleBookingAttempt = async (doctorId: string) => {
-    setCheckingAuth(true);
-    const session = getSession();
-    setCheckingAuth(false);
+  const activeFilters = [specialty, city, minRating > 0 ? `${minRating}+ stars` : '', maxFee < 4000 ? `Under Rs. ${maxFee}` : ''].filter(Boolean).length;
 
-    if (!session) {
-      router.push('/login?returnTo=/book/' + doctorId);
-    } else {
-      router.push('/book/' + doctorId);
-    }
+  const clearAll = () => {
+    setQuery(''); setSpecialty(''); setCity(''); setMaxFee(4000); setMinRating(0); setSort('rating');
   };
 
-  // --- SHARED NEON STYLING ---
-  const neonInputClass = "w-full pl-10 pr-4 py-3 bg-white dark:bg-zinc-900 border-2 border-blue-100 dark:border-zinc-800 rounded-xl focus:outline-none focus:border-blue-500 focus:shadow-[0_0_20px_rgba(59,130,246,0.3)] focus:ring-2 focus:ring-blue-500/20 transition-all duration-300 text-foreground font-bold text-sm appearance-none cursor-pointer";
+  const filterPanel = (
+    <div className="space-y-6">
+      <div>
+        <Label>Specialty</Label>
+        <div className="relative">
+          <Select value={specialty} onChange={e => setSpecialty(e.target.value)} aria-label="Filter by specialty">
+            <option value="">All specialties</option>
+            {specialties.map(s => <option key={s} value={s}>{s}</option>)}
+          </Select>
+        </div>
+      </div>
+      <div>
+        <Label>City</Label>
+        <Select value={city} onChange={e => setCity(e.target.value)} aria-label="Filter by city">
+          <option value="">All cities</option>
+          {cities.map(c => <option key={c} value={c}>{c}</option>)}
+        </Select>
+      </div>
+      <div>
+        <Label>Max fee · <span className="text-brand-700 tnum">Rs. {maxFee.toLocaleString()}</span></Label>
+        <input
+          type="range" min={1000} max={4000} step={250} value={maxFee}
+          onChange={e => setMaxFee(Number(e.target.value))}
+          className="w-full accent-[#0e7c6b] cursor-pointer"
+          aria-label="Maximum consultation fee"
+        />
+        <div className="flex justify-between text-[11px] font-bold text-ink-400 mt-1"><span>Rs. 1,000</span><span>Rs. 4,000</span></div>
+      </div>
+      <div>
+        <Label>Minimum rating</Label>
+        <div className="flex gap-2">
+          {[0, 4.5, 4.7, 4.9].map(r => (
+            <button
+              key={r}
+              onClick={() => setMinRating(r)}
+              className={cn(
+                'flex-1 rounded-full border py-2 text-[13px] font-extrabold transition-all cursor-pointer',
+                minRating === r ? 'bg-brand-600 text-white border-brand-600' : 'border-ink-900/15 text-ink-600 hover:border-brand-500',
+              )}
+            >
+              {r === 0 ? 'Any' : `${r}+`}
+            </button>
+          ))}
+        </div>
+      </div>
+      {(activeFilters > 0) && (
+        <Button variant="ghost" size="sm" onClick={clearAll} className="w-full">
+          <X className="size-4" /> Clear all filters
+        </Button>
+      )}
+    </div>
+  );
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <Header />
-      <main className="flex-1 py-12 md:py-20 relative overflow-hidden">
-        <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-300/10 dark:bg-blue-600/5 rounded-full blur-3xl -z-10 float-slow" />
-        
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          
-          <Link href="/" className="inline-flex items-center gap-2 text-foreground-muted hover:text-primary font-bold mb-8 md:mb-12 transition-colors">
-            <ArrowLeft className="w-5 h-5" /> Back to Home
-          </Link>
+    <div className="min-h-screen">
+      <SiteHeader />
+      <PageHero
+        eyebrow="Find a doctor"
+        title={<>Meet the specialists <span className="italic text-brand-300">behind your care.</span></>}
+        copy="Every doctor is verified — qualifications, fees and patient ratings shown upfront. No surprises."
+      />
 
-          <div className="mb-12 text-center md:text-left space-y-4">
-            <h1 className="text-4xl md:text-5xl font-black text-foreground">
-              Our <span className="text-gradient drop-shadow-[0_0_15px_rgba(59,130,246,0.3)]">Specialists</span>
-            </h1>
-            <p className="text-lg text-foreground-muted font-medium max-w-2xl">
-              Search and book appointments with top-rated doctors across the country.
-            </p>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-14">
+        {/* Search + sort bar */}
+        <div className="flex flex-col md:flex-row gap-3 md:items-center">
+          <div className="relative flex-1">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 size-5 text-ink-400" />
+            <Input
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Search by name, specialty or hospital…"
+              className="pl-12 h-[52px] rounded-full shadow-soft"
+              aria-label="Search doctors"
+            />
           </div>
-
-          {/* SEARCH & FILTER COMMAND CENTER */}
-          <div className="glass-card p-6 rounded-3xl border border-blue-500/20 shadow-[0_0_30px_rgba(59,130,246,0.05)] relative z-20 mb-12">
-            <div className="flex items-center gap-2 mb-4 text-foreground font-black">
-              <Filter className="w-5 h-5 text-primary" /> Advanced Search
+          <div className="flex gap-2">
+            <Button variant="outline" size="md" onClick={() => setFiltersOpen(!filtersOpen)} className="md:hidden flex-1">
+              <SlidersHorizontal className="size-4" /> Filters {activeFilters > 0 && `(${activeFilters})`}
+            </Button>
+            <div className="relative flex-1 md:flex-none">
+              <Select value={sort} onChange={e => setSort(e.target.value as SortKey)} className="rounded-full h-[52px] md:w-56 font-bold" aria-label="Sort doctors">
+                <option value="rating">Sort: Top rated</option>
+                <option value="fee-low">Sort: Fee low to high</option>
+                <option value="fee-high">Sort: Fee high to low</option>
+                <option value="exp">Sort: Most experienced</option>
+              </Select>
             </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              
-              {/* Name Search */}
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted pointer-events-none z-10" />
-                <input 
-                  type="text" 
-                  placeholder="Doctor Name..." 
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className={`${neonInputClass} cursor-text`}
+          </div>
+        </div>
+
+        {filtersOpen && (
+          <div className="md:hidden mt-4 bg-white rounded-3xl border border-ink-900/[0.07] shadow-soft p-6 animate-fade-up">
+            {filterPanel}
+          </div>
+        )}
+
+        <div className="mt-8 grid lg:grid-cols-[260px_1fr] gap-8 items-start">
+          {/* Desktop filters */}
+          <aside className="hidden md:block sticky top-24 bg-white rounded-3xl border border-ink-900/[0.07] shadow-soft p-6">
+            <h2 className="font-display text-lg font-semibold text-ink-900 mb-5 flex items-center gap-2">
+              <SlidersHorizontal className="size-4 text-brand-600" /> Filters
+            </h2>
+            {filterPanel}
+          </aside>
+
+          {/* Results */}
+          <div>
+            <p className="text-sm font-bold text-ink-500 mb-5" role="status">
+              {loading ? 'Finding doctors…' : <><span className="text-ink-900 tnum">{filtered.length}</span> doctor{filtered.length === 1 ? '' : 's'} found</>}
+            </p>
+            {loading ? (
+              <div className="grid sm:grid-cols-2 gap-4 sm:gap-5">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="bg-white rounded-3xl border border-ink-900/[0.07] p-6 h-64 animate-pulse">
+                    <div className="flex gap-4"><div className="size-20 rounded-full bg-cream-200" /><div className="flex-1 space-y-2"><div className="h-4 bg-cream-200 rounded w-2/3" /><div className="h-3 bg-cream-200 rounded w-1/2" /></div></div>
+                  </div>
+                ))}
+              </div>
+            ) : filtered.length === 0 ? (
+              <div className="bg-white rounded-3xl border border-ink-900/[0.07] shadow-soft">
+                <EmptyState
+                  title="No doctors match your filters"
+                  copy="Try widening the fee range or clearing a filter or two."
+                  action={<Button variant="outline" onClick={clearAll}>Clear all filters</Button>}
                 />
               </div>
-
-              {/* Specialty Dropdown */}
-              <div className="relative">
-                <Stethoscope className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-primary pointer-events-none z-10" />
-                <select value={specialty} onChange={(e) => setSpecialty(e.target.value)} className={neonInputClass}>
-                  {specialties.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
+            ) : (
+              <div className="grid sm:grid-cols-2 gap-4 sm:gap-5">
+                {filtered.map((d, i) => (
+                  <Reveal key={d.id} delay={Math.min(i, 6) * 60}>
+                    <DoctorCard doctor={d} className="h-full" />
+                  </Reveal>
+                ))}
               </div>
-
-              {/* City Dropdown */}
-              <div className="relative">
-                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-rose-500 pointer-events-none z-10" />
-                <select value={city} onChange={(e) => setCity(e.target.value)} className={neonInputClass}>
-                  {cities.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </div>
-
-              {/* Hospital Dropdown */}
-              <div className="relative">
-                <Building className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-500 pointer-events-none z-10" />
-                <select value={hospital} onChange={(e) => setHospital(e.target.value)} className={neonInputClass}>
-                  {hospitals.map(h => <option key={h} value={h}>{h}</option>)}
-                </select>
-              </div>
-
-            </div>
+            )}
           </div>
+        </div>
 
-          {/* RESULTS GRID */}
-          {isLoading ? (
-            <div className="py-20 text-center font-bold text-primary animate-pulse text-xl">Loading Live Database...</div>
-          ) : filteredDoctors.length === 0 ? (
-            <div className="glass-card py-20 text-center rounded-3xl border border-dashed border-border/50">
-              <Search className="w-12 h-12 text-foreground-muted mx-auto mb-4 opacity-50" />
-              <h3 className="text-xl font-bold text-foreground">No doctors found</h3>
-              <p className="text-foreground-muted mt-2">Try adjusting your filters to see more results.</p>
-              <Button onClick={() => { setSearchTerm(''); setSpecialty('All Specialties'); setCity('All Cities'); setHospital('All Hospitals'); }} variant="outline" className="mt-6 rounded-full font-bold">
-                Clear All Filters
-              </Button>
+        {/* Cities strip */}
+        <div className="mt-14 bg-pine-900 rounded-[28px] p-7 sm:p-10 relative overflow-hidden">
+          <div className="absolute inset-0 dot-grid-light opacity-40" aria-hidden />
+          <div className="relative flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5">
+            <div>
+              <h2 className="font-display text-2xl font-semibold text-white">Prefer to visit in person?</h2>
+              <p className="text-white/60 text-sm mt-1.5 flex items-center gap-1.5"><MapPin className="size-4" /> Our flagship clinic: 14-B Main Boulevard, Gulberg III, Lahore</p>
             </div>
-          ) : (
-            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-6 md:gap-8">
-              {filteredDoctors.map((doctor) => (
-                <div key={doctor.id} className="glass-card p-6 md:p-8 rounded-3xl flex flex-col card-hover bg-white dark:bg-zinc-900 border border-blue-100 dark:border-zinc-800">
-                  
-                  <div className="flex items-start gap-4 mb-6">
-                    <div className={`w-16 h-16 bg-gradient-to-br ${doctor.bg || 'from-blue-600 to-blue-400'} rounded-full flex items-center justify-center text-white font-black text-xl shadow-md shrink-0`}>
-                      {doctor.initials || doctor.full_name?.substring(0, 2).toUpperCase() || 'DR'}
-                    </div>
-                    <div>
-                      <h3 className="text-xl font-bold text-foreground mb-1">{doctor.full_name}</h3>
-                      <p className="text-primary dark:text-blue-400 font-bold text-sm">{doctor.specialty || 'General Practitioner'}</p>
-                      <p className="text-xs text-foreground-muted font-semibold mt-1">{doctor.qual || 'MBBS'} • {doctor.exp || 'New'}</p>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3 mb-8 flex-1 border-t border-border/50 pt-4">
-                    <div className="flex items-center gap-2 text-foreground-muted text-sm font-medium">
-                      <Star className="w-4 h-4 text-yellow-500 fill-yellow-500" />
-                      <span className="text-foreground font-bold">{doctor.rating || '5.0'}</span>
-                      <span>({doctor.reviews || '0'} reviews)</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-foreground-muted text-sm font-medium">
-                      <Clock className="w-4 h-4 text-green-500" />
-                      <span className="text-foreground font-semibold">{doctor.avail || 'Contact for availability'}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-foreground-muted text-sm font-medium">
-                      <CalendarOff className="w-4 h-4 text-red-400" />
-                      <span className="text-red-500 dark:text-red-400 font-semibold">{doctor.off_days || 'None'}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-foreground-muted text-sm font-medium">
-                      <MapPin className="w-4 h-4 text-zinc-500" />
-                      <span>{doctor.hospital || 'Private Clinic'}, {doctor.city || 'Online'}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-4 border-t border-border/50 mt-auto">
-                    <div>
-                      <p className="text-xs text-foreground-muted font-medium mb-1">Consultation Fee</p>
-                      <p className="text-xl font-black text-foreground">Rs. {doctor.fee || '1000'}</p>
-                    </div>
-                    <Button 
-                      onClick={() => handleBookingAttempt(doctor.id)}
-                      disabled={checkingAuth}
-                      className="hover-wave bg-gradient-to-r from-blue-500 to-blue-700 text-white hover:shadow-glow transition-all duration-300 font-bold rounded-full border-0 px-6 btn-glow"
-                    >
-                      Book Now
-                    </Button>
-                  </div>
-                </div>
+            <div className="flex flex-wrap gap-2">
+              {cities.map(c => (
+                <button
+                  key={c}
+                  onClick={() => { setCity(c); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                  className="rounded-full border border-white/20 text-white text-sm font-bold px-4 py-2 hover:bg-white hover:text-pine-900 transition-all cursor-pointer"
+                >
+                  {c}
+                </button>
               ))}
             </div>
-          )}
+          </div>
         </div>
-      </main>
-      <Footer />
+      </div>
+
+      <SiteFooter />
     </div>
+  );
+}
+
+export default function DoctorsPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-cream-50" />}>
+      <DoctorsContent />
+    </Suspense>
   );
 }
