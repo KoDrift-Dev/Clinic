@@ -1,367 +1,402 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
+import {
+  ArrowLeft, ArrowRight, CalendarDays, Clock, CreditCard, Wallet,
+  CheckCircle2, ShieldCheck, ChevronLeft, ChevronRight, X, Lock, User, Phone, FileText,
+} from 'lucide-react';
+import { SiteHeader } from '@/components/site-header';
+import { SiteFooter } from '@/components/site-footer';
+import { Button, Card, Avatar, Stars, Badge, Input, Label, Textarea, EmptyState } from '@/components/ui-kit';
 import { getProfile, createAppointment, type Profile } from '@/lib/db';
 import { getSession } from '@/lib/auth';
-import { Header } from '@/components/header';
-import { Footer } from '@/components/footer';
-import { Button } from '@/components/ui/button';
-import { Calendar as CalendarIcon, Clock, CreditCard, Wallet, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, X, Lock } from 'lucide-react';
-import Link from 'next/link';
+import { cn } from '@/lib/utils';
 
-const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const DAYS_OF_WEEK = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const DOW = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+const SLOTS = ['10:00 AM', '10:30 AM', '11:00 AM', '11:30 AM', '04:00 PM', '04:30 PM', '05:00 PM', '05:30 PM'];
 
-// Standard slots generator (In a real app, this would check a doctor's booked slots table)
-const STANDARD_SLOTS = ['10:00 AM', '10:30 AM', '11:00 AM', '11:30 AM', '04:00 PM', '04:30 PM', '05:00 PM', '05:30 PM'];
+type Step = 1 | 2 | 3;
+
+function fmtDB(d: Date): string {
+  const off = d.getTimezoneOffset();
+  return new Date(d.getTime() - off * 60000).toISOString().split('T')[0];
+}
 
 export default function BookingPage() {
   const params = useParams();
   const router = useRouter();
-  
-  const doctorId = Array.isArray(params.id) ? params.id[0] : params.id;
-  
-  // Live Database States
+  const doctorId = Array.isArray(params.id) ? params.id[0] : (params.id as string);
+
   const [doctor, setDoctor] = useState<Profile | null>(null);
-  const [patient, setPatient] = useState<Profile | null>(null);
-  const [isLoadingDB, setIsLoadingDB] = useState(true);
+  const [sessionName, setSessionName] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  // Booking States
-  const [selectedDate, setSelectedDate] = useState<string>('');
-  const [selectedDateDBFormat, setSelectedDateDBFormat] = useState<string>('');
-  const [selectedTime, setSelectedTime] = useState<string>('');
-  const [paymentMethod, setPaymentMethod] = useState<'online' | 'cash'>('online');
-  
-  // Payment & Success States
-  const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
-  const [isSuccess, setIsSuccess] = useState(false);
+  const [step, setStep] = useState<Step>(1);
+  const [date, setDate] = useState<Date | null>(null);
+  const [time, setTime] = useState('');
+  const [month, setMonth] = useState(new Date());
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [reason, setReason] = useState('');
+  const [payMethod, setPayMethod] = useState<'online' | 'cash'>('online');
+  const [processing, setProcessing] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState('');
 
-  // Custom Calendar State
-  const [showCalendar, setShowCalendar] = useState(false);
-  const [currentMonth, setCurrentMonth] = useState(new Date());
-
-  // --- FETCH LIVE DOCTOR & PATIENT DATA ---
   useEffect(() => {
-    const fetchBookingData = async () => {
-      setIsLoadingDB(true);
-      
-      // 1. Fetch Doctor Details
-      const docData = await getProfile(doctorId as string);
-      if (docData && docData.role === 'doctor') setDoctor(docData);
-
-      // 2. Fetch Current Logged-in Patient
-      const session = getSession();
-      if (session) {
-        const patData = await getProfile(session.profileId);
-        if (patData) setPatient(patData);
+    (async () => {
+      const doc = await getProfile(doctorId);
+      if (doc && doc.role === 'doctor') setDoctor(doc);
+      const s = getSession();
+      if (s) {
+        setSessionName(s.full_name);
+        setName(s.full_name);
+        const p = await getProfile(s.profileId);
+        if (p?.phone) setPhone(p.phone);
+        if (p?.current_symptoms) setReason(p.current_symptoms);
       }
-
-      setIsLoadingDB(false);
-    };
-    
-    if (doctorId) fetchBookingData();
+      setLoading(false);
+    })();
   }, [doctorId]);
 
-  const daysInMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0).getDate();
-  const firstDayOfMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1).getDay();
-  
-  const nextMonth = () => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1));
-  const prevMonth = () => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1));
-
-  const handleSelectDate = (day: number) => {
-    const newDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-    setSelectedDate(newDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }));
-    
-    // Format YYYY-MM-DD safely for the database DATE column
-    const offset = newDate.getTimezoneOffset();
-    const localDate = new Date(newDate.getTime() - (offset * 60 * 1000));
-    setSelectedDateDBFormat(localDate.toISOString().split('T')[0]);
-    
-    setShowCalendar(false);
-    setSelectedTime(''); 
+  const offDays = useMemo(() => (doctor?.off_days ?? '').toLowerCase(), [doctor]);
+  const isOff = (d: Date) => {
+    const n = d.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+    return offDays.includes(n) || offDays.includes(n.slice(0, 3));
   };
+  const isPast = (d: Date) => fmtDB(d) < fmtDB(new Date());
 
-  const handleInitialBookingClick = () => {
-    if (!selectedDate || !selectedTime) return;
-    if (!patient) {
-      alert("Please log in to book an appointment.");
-      router.push('/login?returnTo=/book/' + doctorId);
+  const days = useMemo(() => {
+    const y = month.getFullYear(), m = month.getMonth();
+    const first = new Date(y, m, 1).getDay();
+    const count = new Date(y, m + 1, 0).getDate();
+    return { first, count };
+  }, [month]);
+
+  const canNext1 = date && time;
+  const canNext2 = name.trim().length > 1 && phone.trim().length >= 7;
+
+  const fee = doctor?.fee ?? 1000;
+  const total = fee; // no hidden platform fee — transparent pricing
+
+  const confirm = async () => {
+    setError('');
+    if (!sessionName) {
+      router.push(`/login?returnTo=/book/${doctorId}`);
       return;
     }
-    
-    if (paymentMethod === 'online') {
-      setShowPaymentModal(true);
-    } else {
-      processFinalBooking();
-    }
-  };
-
-  // --- REAL LOCAL INSERTION ---
-  const processFinalBooking = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    setIsProcessingPayment(true);
-
-    const feeToCharge = doctor?.fee || 1000;
-    const diseaseOrReason = patient?.current_symptoms || 'General Checkup';
-
+    if (!doctor || !date || !time) return;
+    setProcessing(true);
     try {
+      const s = getSession();
       await createAppointment({
-        doctor_id: doctor!.id,
-        patient_id: patient!.id,
-        patient_name: patient!.full_name || 'Patient',
-        disease: diseaseOrReason,
-        appointment_date: selectedDateDBFormat,
-        appointment_time: selectedTime,
+        doctor_id: doctor.id,
+        patient_id: s?.profileId ?? '',
+        patient_name: name.trim(),
+        disease: reason.trim() || 'General Checkup',
+        appointment_date: fmtDB(date),
+        appointment_time: time,
         type: 'Consultation',
-        payment_method: paymentMethod === 'online' ? 'Online' : 'Cash',
-        fee: feeToCharge,
-        status: 'Pending'
+        payment_method: payMethod === 'online' ? 'Online' : 'Cash',
+        fee,
+        status: 'Pending',
       });
+      setDone(true);
     } catch {
-      setIsProcessingPayment(false);
-      alert("Failed to book appointment. Please try again.");
-      return;
+      setError('Something went wrong while saving your booking. Please try again.');
+    } finally {
+      setProcessing(false);
     }
-
-    setIsProcessingPayment(false);
-
-    setShowPaymentModal(false);
-    setIsSuccess(true);
-    setTimeout(() => router.push('/dashboard/patient'), 2000);
   };
 
-  if (isLoadingDB) {
-    return <div className="min-h-screen flex items-center justify-center font-black text-primary animate-pulse">Loading Secure Booking Engine...</div>;
-  }
-
-  if (!doctor) {
-    return <div className="min-h-screen flex flex-col items-center justify-center font-bold text-foreground">Doctor not found. <Link href="/doctors" className="text-primary mt-4">Go Back</Link></div>;
-  }
-
-  if (isSuccess) {
+  if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="glass-card p-12 text-center rounded-3xl max-w-md w-full mx-4 space-y-6 border border-green-500/30 shadow-[0_0_50px_rgba(34,197,94,0.1)] animate-in zoom-in">
-          <div className="w-20 h-20 bg-green-500 rounded-full flex items-center justify-center mx-auto shadow-[0_0_30px_rgba(34,197,94,0.4)]">
-            <CheckCircle2 className="w-10 h-10 text-white" />
-          </div>
-          <h2 className="text-3xl font-black text-foreground">Booking Confirmed!</h2>
-          <p className="text-foreground-muted font-medium">
-            Your appointment with {doctor.full_name} on {selectedDate} at {selectedTime} has been securely saved to the database.
-          </p>
-          <p className="text-sm text-primary animate-pulse font-bold pt-4">
-            Redirecting to your dashboard...
-          </p>
-        </div>
+      <div className="min-h-screen bg-cream-50">
+        <SiteHeader />
+        <div className="max-w-4xl mx-auto px-4 py-20"><div className="animate-pulse h-64 bg-white rounded-3xl border border-ink-900/[0.07]" /></div>
       </div>
     );
   }
 
-  return (
-    <div className="min-h-screen flex flex-col bg-background relative">
-      <Header />
-
-      {/* PAYMENT GATEWAY MODAL */}
-      {showPaymentModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => !isProcessingPayment && setShowPaymentModal(false)} />
-          <div className="glass-card bg-[#0a0a0c]/95 w-full max-w-md rounded-3xl z-10 p-8 border border-blue-500/30 shadow-[0_0_40px_rgba(59,130,246,0.3)] animate-in zoom-in-95">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-black text-foreground flex items-center gap-2">
-                <ShieldCheck className="w-6 h-6 text-green-500"/> Secure Checkout
-              </h2>
-              {!isProcessingPayment && (
-                <button onClick={() => setShowPaymentModal(false)} className="p-2 hover:bg-white/10 rounded-full">
-                  <X className="w-5 h-5 text-foreground"/>
-                </button>
-              )}
-            </div>
-            
-            <form onSubmit={processFinalBooking} className="space-y-5 relative">
-              <div className="bg-[#111113] border border-zinc-800 p-4 rounded-2xl flex justify-between items-center mb-6 shadow-inner">
-                <span className="font-bold text-foreground-muted">Total to pay</span>
-                <span className="text-2xl font-black text-primary">Rs. {(doctor.fee || 1000) + 100}</span>
-              </div>
-
-              <div>
-                <label className="block text-sm font-bold text-foreground mb-2 ml-1">Card / Account Number</label>
-                <div className="relative">
-                  <CreditCard className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-foreground-muted z-10" />
-                  <input type="text" required placeholder="0000 0000 0000 0000" className="w-full pl-12 pr-4 py-3 bg-[#111113] border-2 border-zinc-800 rounded-xl focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 text-white font-medium tracking-widest relative z-0 transition-all"/>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-bold text-foreground mb-2 ml-1">Expiry Date</label>
-                  <input type="text" required placeholder="MM/YY" className="w-full px-4 py-3 bg-[#111113] border-2 border-zinc-800 rounded-xl focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 text-white font-medium text-center transition-all" />
-                </div>
-                <div>
-                  <label className="block text-sm font-bold text-foreground mb-2 ml-1">CVV</label>
-                  <div className="relative">
-                    <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted z-10" />
-                    <input type="password" required placeholder="***" maxLength={3} className="w-full pl-10 pr-4 py-3 bg-[#111113] border-2 border-zinc-800 rounded-xl focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 text-white font-medium tracking-widest text-center relative z-0 transition-all" />
-                  </div>
-                </div>
-              </div>
-
-              <Button type="submit" disabled={isProcessingPayment} className="w-full bg-gradient-to-r from-blue-500 to-blue-700 text-white rounded-full font-black py-6 mt-4 hover-wave shadow-[0_0_20px_rgba(59,130,246,0.4)] border-0 text-lg">
-                {isProcessingPayment ? 'Processing Payment...' : `Pay Rs. ${(doctor.fee || 1000) + 100}`}
-              </Button>
-              <p className="text-center text-xs text-foreground-muted font-medium mt-4 flex items-center justify-center gap-1">
-                <Lock className="w-3 h-3" /> Payments are 256-bit encrypted.
-              </p>
-            </form>
+  if (!doctor) {
+    return (
+      <div className="min-h-screen bg-cream-50 flex flex-col">
+        <SiteHeader />
+        <div className="flex-1 flex items-center justify-center px-4">
+          <div className="bg-white rounded-3xl border border-ink-900/[0.07] shadow-soft max-w-md w-full">
+            <EmptyState title="Doctor not found" copy="Let's find you another specialist." action={<Link href="/doctors"><Button>Browse doctors</Button></Link>} />
           </div>
         </div>
-      )}
+        <SiteFooter />
+      </div>
+    );
+  }
 
-      <main className="flex-1 py-12 relative overflow-hidden">
-        <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl -z-10 float-slow" />
-        
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-          <Link href="/doctors" className="inline-flex items-center gap-2 text-foreground-muted hover:text-primary font-bold mb-8 transition-colors">
-            <ArrowLeft className="w-5 h-5" /> Back to Specialists
-          </Link>
-
-          <div className="grid md:grid-cols-3 gap-8 items-start">
-            {/* Left Column: Doctor Details */}
-            <div className="md:col-span-1 space-y-6 relative z-10">
-              <div className="glass-card p-6 md:p-8 rounded-3xl border border-blue-500/20 shadow-lg">
-                <h3 className="font-black text-foreground-muted text-xs uppercase tracking-wider mb-6 pb-2 border-b border-zinc-800">Doctor Profile</h3>
-                <div className="flex flex-col items-center text-center gap-4 mb-6">
-                  <div className={`w-24 h-24 bg-gradient-to-br ${doctor.bg || 'from-blue-600 to-blue-400'} rounded-full flex items-center justify-center text-white font-black text-3xl shadow-[0_0_20px_rgba(59,130,246,0.3)] shrink-0`}>
-                    {doctor.initials || doctor.full_name?.substring(0, 2).toUpperCase() || 'DR'}
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-black text-foreground">{doctor.full_name}</h3>
-                    <p className="text-primary dark:text-blue-400 font-bold text-sm mt-1">{doctor.specialty || 'General Practitioner'}</p>
-                    <p className="text-xs text-foreground-muted font-medium mt-1">{doctor.qual}</p>
-                  </div>
-                </div>
-                
-                <div className="border-t border-zinc-800 pt-6 space-y-4">
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-foreground-muted font-bold">Consultation Fee</span>
-                    <span className="text-foreground font-black">Rs. {doctor.fee || 1000}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-foreground-muted font-bold">Platform Fee</span>
-                    <span className="text-foreground font-black">Rs. 100</span>
-                  </div>
-                  <div className="flex justify-between items-center text-base border-t border-zinc-800 pt-4 mt-2">
-                    <span className="text-foreground font-black">Total Amount</span>
-                    <span className="text-primary dark:text-blue-400 font-black text-xl">Rs. {(doctor.fee || 1000) + 100}</span>
-                  </div>
-                </div>
-              </div>
+  if (done) {
+    return (
+      <div className="min-h-screen bg-cream-50 flex flex-col">
+        <SiteHeader />
+        <main className="flex-1 flex items-center justify-center px-4 py-16">
+          <Card className="max-w-md w-full p-8 sm:p-10 text-center animate-fade-up">
+            <span className="size-20 rounded-full bg-brand-600 text-white flex items-center justify-center mx-auto shadow-glow animate-pulse-ring">
+              <CheckCircle2 className="size-10" />
+            </span>
+            <h1 className="font-display text-3xl font-semibold text-ink-900 mt-6">Booking confirmed</h1>
+            <p className="text-ink-500 text-[15px] mt-3 leading-relaxed">
+              Your visit with <strong className="text-ink-900">{doctor.full_name}</strong> on{' '}
+              <strong className="text-ink-900">{date?.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</strong> at{' '}
+              <strong className="text-ink-900 tnum">{time}</strong> is saved.
+            </p>
+            <div className="mt-6 rounded-2xl bg-cream-50 border border-ink-900/[0.06] p-4 flex items-center justify-between text-sm font-bold">
+              <span className="text-ink-500">Total {payMethod === 'online' ? 'paid' : 'due at clinic'}</span>
+              <span className="font-display text-xl text-ink-900 tnum">Rs. {total.toLocaleString()}</span>
             </div>
+            <div className="mt-6 flex flex-col gap-2">
+              <Link href="/dashboard/patient"><Button className="w-full">View my appointments</Button></Link>
+              <Link href="/doctors"><Button variant="outline" className="w-full">Book another visit</Button></Link>
+            </div>
+          </Card>
+        </main>
+        <SiteFooter />
+      </div>
+    );
+  }
 
-            {/* Right Column: Booking Steps */}
-            <div className="md:col-span-2 space-y-6">
-              
-              <div className="glass-card p-6 md:p-8 rounded-3xl space-y-8 border border-zinc-800">
-                <div className="relative">
-                  <h3 className="font-black text-foreground flex items-center gap-2 mb-4 text-lg">
-                    <CalendarIcon className="w-5 h-5 text-primary drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]" /> 1. Select Date
-                  </h3>
-                  
-                  <div 
-                    onClick={() => setShowCalendar(true)}
-                    className="w-full max-w-sm px-5 py-3.5 bg-[#111113] border-2 border-zinc-800 hover:border-blue-500 focus:ring-4 focus:ring-blue-500/20 rounded-2xl flex items-center justify-between cursor-pointer transition-all text-white font-bold"
-                  >
-                    <span>{selectedDate || 'Choose an available date...'}</span>
-                    <CalendarIcon className="w-5 h-5 text-primary" />
+  const steps: { n: Step; label: string; icon: typeof CalendarDays }[] = [
+    { n: 1, label: 'Date & time', icon: CalendarDays },
+    { n: 2, label: 'Your details', icon: User },
+    { n: 3, label: 'Confirm', icon: ShieldCheck },
+  ];
+
+  return (
+    <div className="min-h-screen bg-cream-50 flex flex-col">
+      <SiteHeader />
+
+      <main className="flex-1">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-14">
+          <button onClick={() => router.back()} className="inline-flex items-center gap-2 text-ink-500 hover:text-brand-700 text-sm font-bold mb-8 cursor-pointer transition-colors">
+            <ArrowLeft className="size-4" /> Back
+          </button>
+
+          {/* Stepper */}
+          <ol className="flex items-center gap-2 sm:gap-3 mb-10" aria-label="Booking steps">
+            {steps.map((s, i) => (
+              <li key={s.n} className="flex items-center gap-2 sm:gap-3 flex-1 last:flex-none">
+                <span className={cn(
+                  'size-10 rounded-full flex items-center justify-center font-extrabold text-sm shrink-0 transition-all',
+                  step > s.n ? 'bg-brand-600 text-white' : step === s.n ? 'bg-brand-600 text-white shadow-glow' : 'bg-white border border-ink-900/15 text-ink-400',
+                )}>
+                  {step > s.n ? <CheckCircle2 className="size-5" /> : s.n}
+                </span>
+                <span className={cn('text-sm font-extrabold hidden sm:block', step === s.n ? 'text-ink-900' : 'text-ink-400')}>{s.label}</span>
+                {i < steps.length - 1 && <span className={cn('flex-1 h-0.5 rounded-full mx-1', step > s.n ? 'bg-brand-500' : 'bg-ink-900/10')} aria-hidden />}
+              </li>
+            ))}
+          </ol>
+
+          <div className="grid lg:grid-cols-[1fr_320px] gap-6 items-start">
+            <div>
+              {/* STEP 1 */}
+              {step === 1 && (
+                <Card className="p-6 sm:p-8 animate-fade-up">
+                  <h1 className="font-display text-2xl sm:text-3xl font-semibold text-ink-900">Choose a date & time</h1>
+                  <p className="text-sm text-ink-500 font-medium mt-1.5 flex items-center gap-1.5">
+                    <Clock className="size-4 text-brand-600" /> {doctor.full_name} · Off: {doctor.off_days ?? '—'}
+                  </p>
+
+                  <div className="mt-6 max-w-md">
+                    <div className="flex items-center justify-between mb-3">
+                      <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} className="size-9 rounded-full hover:bg-brand-50 flex items-center justify-center text-ink-600 cursor-pointer" aria-label="Previous month">
+                        <ChevronLeft className="size-5" />
+                      </button>
+                      <p className="font-display text-lg font-semibold text-ink-900">{MONTHS[month.getMonth()]} {month.getFullYear()}</p>
+                      <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} className="size-9 rounded-full hover:bg-brand-50 flex items-center justify-center text-ink-600 cursor-pointer" aria-label="Next month">
+                        <ChevronRight className="size-5" />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-7 mb-1">
+                      {DOW.map(d => <div key={d} className="text-center text-[11px] font-extrabold text-ink-400 py-2">{d}</div>)}
+                    </div>
+                    <div className="grid grid-cols-7 gap-1">
+                      {Array.from({ length: days.first }).map((_, i) => <div key={`e${i}`} />)}
+                      {Array.from({ length: days.count }).map((_, i) => {
+                        const d = new Date(month.getFullYear(), month.getMonth(), i + 1);
+                        const disabled = isOff(d) || isPast(d);
+                        const selected = date && fmtDB(date) === fmtDB(d);
+                        const today = fmtDB(d) === fmtDB(new Date());
+                        return (
+                          <button
+                            key={i + 1}
+                            disabled={disabled}
+                            onClick={() => { setDate(d); setTime(''); }}
+                            className={cn(
+                              'h-11 rounded-xl text-sm font-bold transition-all',
+                              selected ? 'bg-brand-600 text-white shadow-glow scale-105'
+                                : disabled ? 'text-ink-900/20 cursor-not-allowed'
+                                : today ? 'bg-brand-50 text-brand-800 hover:bg-brand-100 cursor-pointer'
+                                : 'text-ink-700 hover:bg-brand-50 cursor-pointer',
+                            )}
+                            aria-label={d.toLocaleDateString()}
+                          >
+                            {i + 1}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <p className="text-xs text-amber-500 font-bold mt-3 ml-2 flex items-center gap-1">Note: Doctor is off on {doctor.off_days || 'Sundays'}.</p>
 
-                  {showCalendar && (
-                    <>
-                      <div className="fixed inset-0 z-40" onClick={() => setShowCalendar(false)} />
-                      <div className="absolute top-[85px] left-0 mt-2 w-full max-w-sm z-50 glass-card bg-[#0a0a0c]/95 backdrop-blur-xl border border-blue-500/50 shadow-[0_0_30px_rgba(59,130,246,0.3)] rounded-3xl p-5 animate-in zoom-in-95">
-                        <div className="flex items-center justify-between mb-4">
-                          <button onClick={prevMonth} className="p-2 hover:bg-blue-500/20 rounded-full transition-colors text-primary"><ChevronLeft className="w-5 h-5" /></button>
-                          <div className="font-black text-white text-lg">{MONTH_NAMES[currentMonth.getMonth()]} {currentMonth.getFullYear()}</div>
-                          <button onClick={nextMonth} className="p-2 hover:bg-blue-500/20 rounded-full transition-colors text-primary"><ChevronRight className="w-5 h-5" /></button>
-                        </div>
-                        <div className="grid grid-cols-7 mb-2">
-                          {DAYS_OF_WEEK.map(day => <div key={day} className="text-center text-xs font-bold text-primary/70 pb-2">{day}</div>)}
-                        </div>
-                        <div className="grid grid-cols-7 gap-1">
-                          {Array.from({ length: firstDayOfMonth }).map((_, i) => <div key={`empty-${i}`} className="p-2" />)}
-                          {Array.from({ length: daysInMonth }).map((_, i) => {
-                            const dayNumber = i + 1;
-                            const isToday = dayNumber === new Date().getDate() && currentMonth.getMonth() === new Date().getMonth() && currentMonth.getFullYear() === new Date().getFullYear();
-                            const currentDateObj = selectedDate ? new Date(selectedDate) : null;
-                            const isSelected = currentDateObj?.getDate() === dayNumber && currentDateObj?.getMonth() === currentMonth.getMonth() && currentDateObj?.getFullYear() === currentMonth.getFullYear();
+                  <div className={cn('mt-8 transition-opacity', !date && 'opacity-40 pointer-events-none')}>
+                    <h2 className="font-bold text-ink-900 mb-3 flex items-center gap-2">
+                      <Clock className="size-4 text-brand-600" />
+                      {date ? `Slots for ${date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}` : 'Select a date to see slots'}
+                    </h2>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      {SLOTS.map(t => (
+                        <button
+                          key={t}
+                          onClick={() => setTime(t)}
+                          className={cn(
+                            'py-3 rounded-2xl border-2 text-sm font-extrabold transition-all cursor-pointer tnum',
+                            time === t ? 'bg-brand-600 text-white border-brand-600 shadow-glow' : 'bg-white border-ink-900/10 text-ink-700 hover:border-brand-400',
+                          )}
+                        >
+                          {t}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
 
-                            return (
-                              <button
-                                key={dayNumber}
-                                onClick={() => handleSelectDate(dayNumber)}
-                                className={`h-10 w-full flex items-center justify-center rounded-xl text-sm font-bold transition-all hover-wave ${
-                                  isSelected ? 'bg-primary text-white shadow-[0_0_15px_rgba(59,130,246,0.8)]' : isToday ? 'bg-blue-500/20 text-blue-400' : 'text-foreground hover:bg-zinc-800'
-                                }`}
-                              >
-                                {dayNumber}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    </>
+                  <div className="mt-8 flex justify-end">
+                    <Button size="lg" disabled={!canNext1} onClick={() => setStep(2)}>
+                      Continue <ArrowRight className="size-4" />
+                    </Button>
+                  </div>
+                </Card>
+              )}
+
+              {/* STEP 2 */}
+              {step === 2 && (
+                <Card className="p-6 sm:p-8 animate-fade-up">
+                  <h1 className="font-display text-2xl sm:text-3xl font-semibold text-ink-900">Your details</h1>
+                  <p className="text-sm text-ink-500 font-medium mt-1.5">The doctor sees this before your visit.</p>
+                  {!sessionName && (
+                    <div className="mt-5 rounded-2xl bg-glow-100 border border-[#ecd9a8] p-4 text-sm font-semibold text-[#7a5210] flex items-center justify-between gap-3">
+                      <span>You'll sign in before confirming — your booking is kept.</span>
+                      <Link href={`/login?returnTo=/book/${doctorId}`}><Button size="sm" variant="dark">Sign in</Button></Link>
+                    </div>
                   )}
-                </div>
+                  <div className="mt-6 grid sm:grid-cols-2 gap-4">
+                    <div>
+                      <Label htmlFor="bk-name">Full name</Label>
+                      <Input id="bk-name" value={name} onChange={e => setName(e.target.value)} placeholder="Your full name" />
+                    </div>
+                    <div>
+                      <Label htmlFor="bk-phone">Phone number</Label>
+                      <Input id="bk-phone" value={phone} onChange={e => setPhone(e.target.value)} placeholder="03xx-xxxxxxx" inputMode="tel" />
+                    </div>
+                  </div>
+                  <div className="mt-4">
+                    <Label htmlFor="bk-reason">Reason for visit <span className="text-ink-400 font-semibold">(optional)</span></Label>
+                    <Textarea id="bk-reason" value={reason} onChange={e => setReason(e.target.value)} placeholder="Briefly describe your symptoms or concern…" />
+                  </div>
+                  <div className="mt-8 flex justify-between">
+                    <Button variant="outline" onClick={() => setStep(1)}><ArrowLeft className="size-4" /> Back</Button>
+                    <Button size="lg" disabled={!canNext2} onClick={() => setStep(3)}>
+                      Review booking <ArrowRight className="size-4" />
+                    </Button>
+                  </div>
+                </Card>
+              )}
 
-                <div className={!selectedDate ? 'opacity-50 pointer-events-none transition-opacity' : 'transition-opacity'}>
-                  <h3 className="font-black text-foreground flex items-center gap-2 mb-4 text-lg">
-                    <Clock className="w-5 h-5 text-primary drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]" /> 2. Select Time
-                  </h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                    {STANDARD_SLOTS.map((time) => (
+              {/* STEP 3 */}
+              {step === 3 && (
+                <Card className="p-6 sm:p-8 animate-fade-up">
+                  <h1 className="font-display text-2xl sm:text-3xl font-semibold text-ink-900">Confirm your visit</h1>
+
+                  <div className="mt-6 rounded-2xl bg-cream-50 border border-ink-900/[0.06] p-5 space-y-3">
+                    {[
+                      { icon: User, k: 'Patient', v: name },
+                      { icon: Phone, k: 'Phone', v: phone },
+                      { icon: CalendarDays, k: 'Date', v: date?.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) ?? '' },
+                      { icon: Clock, k: 'Time', v: time },
+                      ...(reason.trim() ? [{ icon: FileText, k: 'Reason', v: reason.trim() }] : []),
+                    ].map(r => (
+                      <div key={r.k} className="flex items-center gap-3 text-sm">
+                        <r.icon className="size-4 text-brand-600 shrink-0" />
+                        <span className="text-ink-400 font-bold w-16">{r.k}</span>
+                        <span className="font-bold text-ink-900">{r.v}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <h2 className="font-bold text-ink-900 mt-7 mb-3">Payment method</h2>
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    {[
+                      { id: 'online' as const, icon: CreditCard, t: 'Pay online', d: 'Debit / credit card' },
+                      { id: 'cash' as const, icon: Wallet, t: 'Pay at clinic', d: 'Cash on arrival' },
+                    ].map(m => (
                       <button
-                        key={time}
-                        onClick={() => setSelectedTime(time)}
-                        className={`py-3 px-4 hover-wave rounded-xl font-bold text-sm transition-all border-2 ${
-                          selectedTime === time ? 'bg-primary text-white border-primary shadow-[0_0_15px_rgba(59,130,246,0.5)] scale-105' : 'bg-[#111113] text-foreground border-zinc-800 hover:border-blue-500/50 hover:text-blue-400'
-                        }`}
+                        key={m.id}
+                        onClick={() => setPayMethod(m.id)}
+                        className={cn(
+                          'rounded-2xl border-2 p-5 text-left transition-all cursor-pointer',
+                          payMethod === m.id ? 'border-brand-600 bg-brand-50/60' : 'border-ink-900/10 hover:border-brand-300',
+                        )}
+                        aria-pressed={payMethod === m.id}
                       >
-                        {time}
+                        <m.icon className={cn('size-6', payMethod === m.id ? 'text-brand-700' : 'text-ink-400')} />
+                        <p className="font-extrabold text-ink-900 mt-2 text-[15px]">{m.t}</p>
+                        <p className="text-xs text-ink-500 font-semibold mt-0.5">{m.d}</p>
                       </button>
                     ))}
                   </div>
-                </div>
-              </div>
 
-              <div className={`glass-card p-6 md:p-8 rounded-3xl space-y-6 border border-zinc-800 ${(!selectedDate || !selectedTime) ? 'opacity-50 pointer-events-none' : ''}`}>
-                <h3 className="font-black text-foreground text-lg flex items-center gap-2">
-                  <CreditCard className="w-5 h-5 text-primary drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]" /> 3. Payment Method
-                </h3>
-                <div className="grid sm:grid-cols-2 gap-4">
-                  <button onClick={() => setPaymentMethod('online')} className={`hover-wave p-5 rounded-2xl border-2 flex flex-col items-center justify-center gap-3 transition-all ${paymentMethod === 'online' ? 'border-primary bg-blue-500/10 shadow-[inset_0_0_20px_rgba(59,130,246,0.1)]' : 'border-zinc-800 bg-[#111113] hover:border-blue-500/50'}`}>
-                    <CreditCard className={`w-8 h-8 ${paymentMethod === 'online' ? 'text-primary drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]' : 'text-foreground-muted'}`} />
-                    <div className="text-center"><div className="font-black text-foreground">Pay Online</div><div className="text-xs text-foreground-muted mt-1 font-medium">Debit / Credit Card</div></div>
-                  </button>
-                  <button onClick={() => setPaymentMethod('cash')} className={`hover-wave p-5 rounded-2xl border-2 flex flex-col items-center justify-center gap-3 transition-all ${paymentMethod === 'cash' ? 'border-primary bg-blue-500/10 shadow-[inset_0_0_20px_rgba(59,130,246,0.1)]' : 'border-zinc-800 bg-[#111113] hover:border-blue-500/50'}`}>
-                    <Wallet className={`w-8 h-8 ${paymentMethod === 'cash' ? 'text-primary drop-shadow-[0_0_5px_rgba(59,130,246,0.8)]' : 'text-foreground-muted'}`} />
-                    <div className="text-center"><div className="font-black text-foreground">Pay at Clinic</div><div className="text-xs text-foreground-muted mt-1 font-medium">Cash on arrival</div></div>
-                  </button>
-                </div>
+                  {error && <p className="mt-4 text-sm font-bold text-red-700 bg-red-50 border border-red-200 rounded-2xl p-3.5">{error}</p>}
 
-                <Button 
-                  onClick={handleInitialBookingClick} 
-                  className="w-full bg-gradient-to-r from-blue-500 to-blue-700 text-white hover:shadow-[0_0_25px_rgba(59,130,246,0.5)] transition-all duration-300 font-black py-7 text-base rounded-full btn-glow border-0 mt-6 hover-wave"
-                >
-                  Confirm Booking • Rs. {(doctor.fee || 1000) + 100}
-                </Button>
-              </div>
+                  <div className="mt-8 flex flex-col sm:flex-row justify-between gap-3">
+                    <Button variant="outline" onClick={() => setStep(2)}><ArrowLeft className="size-4" /> Back</Button>
+                    <Button size="lg" loading={processing} onClick={confirm} className="sm:min-w-64">
+                      <Lock className="size-4" /> Confirm · Rs. {total.toLocaleString()}
+                    </Button>
+                  </div>
+                  <p className="mt-4 text-center text-xs text-ink-400 font-semibold">Free cancellation up to 2 hours before your visit.</p>
+                </Card>
+              )}
             </div>
+
+            {/* Summary sidebar */}
+            <aside className="lg:sticky lg:top-24">
+              <Card className="p-6">
+                <div className="flex items-center gap-4">
+                  <Avatar name={doctor.full_name} size="md" />
+                  <div>
+                    <p className="font-bold text-ink-900 text-[15px] leading-snug">{doctor.full_name}</p>
+                    <p className="text-[13px] font-bold text-brand-700">{doctor.specialty}</p>
+                    <Stars rating={doctor.rating ?? 0} className="mt-1" />
+                  </div>
+                </div>
+                <div className="mt-5 pt-5 border-t border-ink-900/[0.06] space-y-2.5 text-sm">
+                  <div className="flex justify-between"><span className="text-ink-500 font-semibold">Consultation</span><span className="font-extrabold text-ink-900 tnum">Rs. {fee.toLocaleString()}</span></div>
+                  <div className="flex justify-between"><span className="text-ink-500 font-semibold">Platform fee</span><span className="font-extrabold text-brand-700">Free</span></div>
+                  <div className="flex justify-between pt-2.5 border-t border-ink-900/[0.06]"><span className="font-extrabold text-ink-900">Total</span><span className="font-display text-xl font-semibold text-ink-900 tnum">Rs. {total.toLocaleString()}</span></div>
+                </div>
+                {(date || time) && (
+                  <div className="mt-4">
+                    <Badge tone="brand" className="w-full justify-center py-2">
+                      {date ? date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'} {time && `· ${time}`}
+                    </Badge>
+                  </div>
+                )}
+              </Card>
+            </aside>
           </div>
         </div>
       </main>
-      <Footer />
+
+      <SiteFooter />
     </div>
   );
 }

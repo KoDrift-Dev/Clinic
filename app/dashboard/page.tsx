@@ -18,10 +18,11 @@ export default function DashboardRouter() {
   }, [router]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
+    <div className="min-h-screen flex items-center justify-center bg-cream-50">
       <div className="text-center">
-        <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-        <p className="font-bold text-foreground-muted">Loading your dashboard...</p>
+        <div className="size-12 rounded-full border-4 border-brand-200 border-t-brand-600 animate-spin mx-auto mb-4" />
+        <p className="font-display text-xl text-ink-900">Opening your dashboard</p>
+        <p className="font-medium text-ink-500 text-sm mt-1">One moment…</p>
       </div>
     </div>
   );
